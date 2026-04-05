@@ -255,7 +255,15 @@ function hasUnsupportedPretextMorphFeatures(
 }
 
 function shouldProbePretextMorph(text: string, layoutContext: PretextMorphLayoutContext) {
-  return PROBE_COMPLEX_WHITESPACE_RE.test(text) || PROBE_SYSTEM_UI_RE.test(layoutContext.font);
+  if (layoutContext.whiteSpace !== "nowrap") {
+    return true;
+  }
+
+  if (PROBE_COMPLEX_WHITESPACE_RE.test(text)) {
+    return true;
+  }
+
+  return PROBE_SYSTEM_UI_RE.test(layoutContext.font);
 }
 
 export function getPretextMorphRenderedText(
@@ -291,6 +299,32 @@ export function getPretextMorphStyleSignature(layoutContext: PretextMorphLayoutC
     engineProfile.preferPrefixWidthsForBreakableRuns ? "1" : "0",
     engineProfile.preferEarlySoftHyphenBreak ? "1" : "0",
   ].join("\u0000");
+}
+
+export function getPretextMorphTrustSignature({
+  renderText,
+  layoutContext,
+  useContentInlineSize,
+}: {
+  renderText: string;
+  layoutContext: PretextMorphLayoutContext | null;
+  useContentInlineSize: boolean;
+}) {
+  if (layoutContext === null) {
+    return null;
+  }
+
+  const styleSignature = getPretextMorphStyleSignature(layoutContext);
+  if (styleSignature === null) {
+    return null;
+  }
+
+  let inlineSizeSignature = layoutContext.width.toFixed(2);
+  if (useContentInlineSize) {
+    inlineSizeSignature = "content";
+  }
+
+  return [styleSignature, inlineSizeSignature, renderText].join("\u0000");
 }
 
 export function getPretextMorphMeasurementBackend(

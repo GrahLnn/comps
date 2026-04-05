@@ -1,6 +1,6 @@
 {
   "name": "@grahlnn/comps",
-  "version": "0.1.0",
+  "version": "0.1.11",
   "description": "React components from grahlnn/comps.",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -22,6 +22,7 @@
     "build": "bun run build:js && bun run build:types",
     "build:js": "bun build ./index.ts --outdir ./dist --format esm --target browser --external react --external react/jsx-runtime",
     "build:types": "tsc -p tsconfig.build.json",
+    "test:vendor-pretext": "bun test vendor-sync/pretext/layout.test.ts",
     "prepublishOnly": "bun run build"
   },
   "publishConfig": {
