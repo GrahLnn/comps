@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { motion } from "motion/react";
 import {
   type PretextMorphMeasurementBackend,
 } from "../utils/text-layout/pretextMorph";
@@ -111,6 +112,10 @@ const FALLBACK_TEXT_STYLE = {
   display: "block",
   gridArea: "1 / 1",
   whiteSpace: "nowrap",
+} satisfies CSSProperties;
+
+const FLOW_TEXT_LAYOUT_STYLE = {
+  display: "inline-block",
 } satisfies CSSProperties;
 
 const SHARED_GLYPH_TYPOGRAPHY_STYLE = {
@@ -499,17 +504,19 @@ function MorphOverlay({
   );
 }
 
+type MeasurementLayerProps = {
+  layerRef: RefObject<HTMLSpanElement | null>;
+  layoutContext: LayoutContext | null;
+  text: string;
+  useContentInlineSize: boolean;
+};
+
 function MeasurementLayer({
   layerRef,
   layoutContext,
   text,
   useContentInlineSize,
-}: {
-  layerRef: RefObject<HTMLSpanElement | null>;
-  layoutContext: LayoutContext | null;
-  text: string;
-  useContentInlineSize: boolean;
-}) {
+}: MeasurementLayerProps) {
   return (
     <span
       ref={layerRef}
@@ -517,6 +524,32 @@ function MeasurementLayer({
       style={getMeasurementLayerStyleModel(layoutContext, useContentInlineSize)}
     >
       {text}
+    </span>
+  );
+}
+
+type FlowTextLayerProps = {
+  flowText: string;
+  flowTextRef: RefObject<HTMLSpanElement | null>;
+  layoutId: string | null;
+  shouldHideFlowText: boolean;
+};
+
+export function FlowTextLayer({
+  flowText,
+  flowTextRef,
+  layoutId,
+  shouldHideFlowText,
+}: FlowTextLayerProps) {
+  return (
+    <span aria-hidden="true" style={getFallbackTextStyle(shouldHideFlowText)}>
+      <motion.span
+        ref={flowTextRef}
+        layoutId={layoutId ?? undefined}
+        style={FLOW_TEXT_LAYOUT_STYLE}
+      >
+        {flowText}
+      </motion.span>
     </span>
   );
 }
@@ -971,9 +1004,11 @@ function useMorphTransition(text: string, className?: string) {
 function ActiveTorph({
   text,
   className,
+  layoutId = null,
 }: {
   text: string;
   className?: string;
+  layoutId?: string | null;
 }) {
   const debugRenderOrdinalRef = useRef(0);
   const overlayRef = useRef<HTMLDivElement | null>(null);
@@ -1819,9 +1854,12 @@ function ActiveTorph({
       style={getRootStyleModel(state.stage, plan, state.measurement, layoutContext)}
     >
       <span style={SCREEN_READER_ONLY_STYLE}>{text}</span>
-      <span aria-hidden="true" style={getFallbackTextStyle(shouldHideFlowText)}>
-        <span ref={flowTextRef}>{flowText}</span>
-      </span>
+      <FlowTextLayer
+        flowText={flowText}
+        flowTextRef={flowTextRef}
+        layoutId={layoutId}
+        shouldHideFlowText={shouldHideFlowText}
+      />
       {measurementLayer}
       {overlay}
     </div>
@@ -1831,11 +1869,13 @@ function ActiveTorph({
 export type TorphProps = {
   text: string;
   className?: string;
+  layoutId?: string | null;
 };
 
 export function Torph({
   text,
   className,
+  layoutId = null,
 }: TorphProps) {
-  return <ActiveTorph text={text} className={className} />;
+  return <ActiveTorph text={text} className={className} layoutId={layoutId} />;
 }

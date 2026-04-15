@@ -4,7 +4,12 @@ import {
   clearMorphMeasurementCaches,
 } from "./measurement-policy";
 import { supportsIntrinsicWidthLock } from "./render";
-import { MORPH, type LayoutContext, type SupportedWhiteSpace } from "./types";
+import {
+  MORPH,
+  type LayoutContext,
+  type MorphMeasurementStability,
+  type SupportedWhiteSpace,
+} from "./types";
 
 let activeMorphMeasurementConsumers = 0;
 let detachMorphMeasurementInvalidationListeners: (() => void) | null = null;
@@ -102,7 +107,11 @@ export function doesTransitionTargetAffectNode(
   return target.contains(node);
 }
 
-function readLayoutContext(node: HTMLElement, width?: number): LayoutContext {
+function readLayoutContext(
+  node: HTMLElement,
+  width: number | undefined,
+  measurementStability: MorphMeasurementStability,
+): LayoutContext {
   const styles = getComputedStyle(node);
   const parentDisplay =
     (node.parentElement && getComputedStyle(node.parentElement).display) ?? "block";
@@ -115,6 +124,7 @@ function readLayoutContext(node: HTMLElement, width?: number): LayoutContext {
     fontVariationSettings: styles.fontVariationSettings,
     letterSpacingPx: readSpacingPx(styles.letterSpacing),
     lineHeightPx: readLineHeightPx(styles),
+    measurementStability,
     parentDisplay,
     textTransform: styles.textTransform,
     whiteSpace: readWhiteSpace(styles.whiteSpace),
@@ -137,6 +147,7 @@ function sameLayoutContext(a: LayoutContext | null, b: LayoutContext) {
     a.fontVariationSettings === b.fontVariationSettings &&
     Math.abs(a.letterSpacingPx - b.letterSpacingPx) < MORPH.geometryEpsilon &&
     Math.abs(a.lineHeightPx - b.lineHeightPx) < MORPH.geometryEpsilon &&
+    a.measurementStability === b.measurementStability &&
     a.parentDisplay === b.parentDisplay &&
     a.textTransform === b.textTransform &&
     a.whiteSpace === b.whiteSpace &&
@@ -214,6 +225,7 @@ export function useObservedLayoutContext<T extends HTMLElement>(
     }
 
     let disposed = false;
+    let measurementStability: MorphMeasurementStability = "stable";
 
     const commitLayoutContext = (next: LayoutContext, refreshMeasurements = false) => {
       setLayoutContext((previous) => {
@@ -241,12 +253,12 @@ export function useObservedLayoutContext<T extends HTMLElement>(
         return;
       }
 
-      const next = readLayoutContext(node, width);
+      const next = readLayoutContext(node, width, measurementStability);
       commitLayoutContext(next, refreshMeasurements);
     };
     syncLayoutContextRef.current = syncLayoutContext;
 
-    const initialLayoutContext = readLayoutContext(node);
+    const initialLayoutContext = readLayoutContext(node, undefined, measurementStability);
     const shouldObserveWrappingWidth =
       initialLayoutContext.whiteSpace !== "nowrap" &&
       !supportsIntrinsicWidthLock(
@@ -265,6 +277,7 @@ export function useObservedLayoutContext<T extends HTMLElement>(
     const ownerWindow = ownerDocument.defaultView ?? window;
 
     let fontMetricTransitionFrame: number | null = null;
+    let stabilizeMeasurementFrame: number | null = null;
     const stopFontMetricTransitionPolling = () => {
       if (fontMetricTransitionFrame === null) {
         return;
@@ -272,6 +285,14 @@ export function useObservedLayoutContext<T extends HTMLElement>(
 
       ownerWindow.cancelAnimationFrame(fontMetricTransitionFrame);
       fontMetricTransitionFrame = null;
+    };
+    const cancelMeasurementStabilization = () => {
+      if (stabilizeMeasurementFrame === null) {
+        return;
+      }
+
+      ownerWindow.cancelAnimationFrame(stabilizeMeasurementFrame);
+      stabilizeMeasurementFrame = null;
     };
     const pollFontMetricTransition = () => {
       syncLayoutContext({
@@ -282,7 +303,13 @@ export function useObservedLayoutContext<T extends HTMLElement>(
       );
     };
     const startFontMetricTransitionPolling = () => {
+      cancelMeasurementStabilization();
+      measurementStability = "live";
+
       if (fontMetricTransitionFrame !== null) {
+        syncLayoutContext({
+          refreshMeasurements: true,
+        });
         return;
       }
 
@@ -346,8 +373,21 @@ export function useObservedLayoutContext<T extends HTMLElement>(
       }
 
       stopFontMetricTransitionPolling();
+      cancelMeasurementStabilization();
+      measurementStability = "finalize";
       syncLayoutContext({
         refreshMeasurements: true,
+      });
+      stabilizeMeasurementFrame = ownerWindow.requestAnimationFrame(() => {
+        stabilizeMeasurementFrame = null;
+        if (disposed || activeFontMetricTransitions.size > 0) {
+          return;
+        }
+
+        measurementStability = "stable";
+        syncLayoutContext({
+          refreshMeasurements: true,
+        });
       });
     };
 
@@ -381,6 +421,7 @@ export function useObservedLayoutContext<T extends HTMLElement>(
       unsubscribeInvalidation();
       resizeObserver?.disconnect();
       stopFontMetricTransitionPolling();
+      cancelMeasurementStabilization();
       activeFontMetricTransitions.clear();
       ownerDocument.removeEventListener(
         "transitionrun",

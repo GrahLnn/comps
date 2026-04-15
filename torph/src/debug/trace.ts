@@ -285,6 +285,7 @@ export function summarizeDebugLayoutContext(layoutContext: LayoutContext | null)
     parentDisplay: layoutContext.parentDisplay,
     whiteSpace: layoutContext.whiteSpace,
     width: roundDebugValue(layoutContext.width),
+    measurementStability: layoutContext.measurementStability,
     measurementVersion: layoutContext.measurementVersion,
   };
 }

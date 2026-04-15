@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  createMorphMeasurementRequest,
   readCachedMorphSegments,
   shouldMeasureUsingContentInlineSize,
 } from "../torph/src/core/measurement-policy";
@@ -16,6 +17,7 @@ function createLayoutContext(
     fontVariationSettings: "normal",
     letterSpacingPx: 0,
     lineHeightPx: 24,
+    measurementStability: "stable",
     parentDisplay: "block",
     textTransform: "none",
     whiteSpace: "normal",
@@ -84,5 +86,48 @@ describe("shouldMeasureUsingContentInlineSize", () => {
         multiLine,
       ),
     ).toBe(false);
+  });
+});
+
+describe("createMorphMeasurementRequest", () => {
+  test("keeps stable eligible layouts on the pretext fast path", () => {
+    const request = createMorphMeasurementRequest({
+      text: "OpenWindow",
+      layoutContext: createLayoutContext({
+        whiteSpace: "nowrap",
+      }),
+      layoutHint: null,
+    });
+
+    expect(request?.measurementBackend).toBe("pretext");
+    expect(request?.domMeasurementKey).toBeNull();
+  });
+
+  test("forces dom measurement while font metrics are animating", () => {
+    const request = createMorphMeasurementRequest({
+      text: "OpenWindow",
+      layoutContext: createLayoutContext({
+        whiteSpace: "nowrap",
+        measurementStability: "live",
+      }),
+      layoutHint: null,
+    });
+
+    expect(request?.measurementBackend).toBe("dom");
+    expect(request?.domMeasurementKey).not.toBeNull();
+  });
+
+  test("keeps final settling on dom before returning to stable fast paths", () => {
+    const request = createMorphMeasurementRequest({
+      text: "OpenWindow",
+      layoutContext: createLayoutContext({
+        whiteSpace: "nowrap",
+        measurementStability: "finalize",
+      }),
+      layoutHint: null,
+    });
+
+    expect(request?.measurementBackend).toBe("dom");
+    expect(request?.domMeasurementKey).not.toBeNull();
   });
 });

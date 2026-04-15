@@ -105,6 +105,10 @@ export function shouldMeasureUsingContentInlineSize(
   );
 }
 
+export function shouldForceDomMeasurementBackend(layoutContext: LayoutContext) {
+  return layoutContext.measurementStability !== "stable";
+}
+
 export function getTrustedPretextMeasurementBackend(
   text: string,
   renderText: string,
@@ -135,6 +139,24 @@ export function getTrustedPretextMeasurementBackend(
   }
 
   return "dom";
+}
+
+export function getPreferredMorphMeasurementBackend(
+  text: string,
+  renderText: string,
+  layoutContext: LayoutContext,
+  useContentInlineSize: boolean,
+): PretextMorphMeasurementBackend {
+  if (shouldForceDomMeasurementBackend(layoutContext)) {
+    return "dom";
+  }
+
+  return getTrustedPretextMeasurementBackend(
+    text,
+    renderText,
+    layoutContext,
+    useContentInlineSize,
+  );
 }
 
 function getDomMeasurementRequestKey(
@@ -186,7 +208,7 @@ export function createMorphMeasurementRequest({
     layoutContext,
     layoutHint,
   );
-  const measurementBackend = getTrustedPretextMeasurementBackend(
+  const measurementBackend = getPreferredMorphMeasurementBackend(
     text,
     renderText,
     layoutContext,

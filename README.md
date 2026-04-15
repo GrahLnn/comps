@@ -5,7 +5,7 @@ React component library.
 ## Install
 
 ```bash
-npm install @grahlnn/comps react
+npm install @grahlnn/comps react motion
 ```
 
 ## Usage

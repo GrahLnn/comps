@@ -10,6 +10,7 @@ export const MORPH = {
 } as const;
 
 export type SupportedWhiteSpace = "normal" | "nowrap" | "pre-wrap";
+export type MorphMeasurementStability = "stable" | "live" | "finalize";
 
 export type MorphCharacterLayout = {
   glyph: string;
@@ -68,6 +69,7 @@ export type LayoutContext = {
   fontVariationSettings: string;
   letterSpacingPx: number;
   lineHeightPx: number;
+  measurementStability: MorphMeasurementStability;
   parentDisplay: string;
   textTransform: string;
   whiteSpace: SupportedWhiteSpace;
