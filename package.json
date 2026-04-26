@@ -1,17 +1,15 @@
 {
   "name": "@grahlnn/comps",
-  "version": "0.1.14",
+  "version": "0.2.0",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "devDependencies": {
     "@types/bun": "latest",
-    "@types/react": "^19.2.14",
-    "motion": "^12.38.0"
+    "@types/react": "^19.2.14"
   },
   "peerDependencies": {
     "react": "^19.2.4",
-    "typescript": "^5",
-    "motion": "^12.6.3"
+    "typescript": "^5"
   },
   "exports": {
     ".": {
@@ -22,20 +20,21 @@
   "description": "React components from grahlnn/comps.",
   "files": [
     "dist",
-    "README.md",
-    "torph/src/vendor/pretext/LICENSE",
-    "torph/src/vendor/pretext/NOTICE.md"
+    "README.md"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "build": "bun run build:js && bun run build:types",
-    "build:js": "bun build ./index.ts --outdir ./dist --format esm --target browser --external react --external react/jsx-runtime --external motion --external motion/react",
+    "clean": "bun run ./scripts/clean-dist.ts",
+    "build": "bun run clean && bun run build:js && bun run build:types",
+    "build:js": "bun build ./index.ts --outdir ./dist --format esm --target browser --external react --external react/jsx-runtime --external @chenglou/pretext",
     "build:types": "tsc -p tsconfig.build.json",
-    "test:vendor-pretext": "bun test vendor-sync/pretext/layout.test.ts",
     "prepublishOnly": "bun run build"
   },
   "type": "module",
-  "types": "./dist/index.d.ts"
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@chenglou/pretext": "0.0.6"
+  }
 }

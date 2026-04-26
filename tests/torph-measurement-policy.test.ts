@@ -17,6 +17,7 @@ function createLayoutContext(
     fontVariationSettings: "normal",
     letterSpacingPx: 0,
     lineHeightPx: 24,
+    measurementCause: "steady",
     measurementStability: "stable",
     parentDisplay: "block",
     textTransform: "none",
@@ -107,6 +108,7 @@ describe("createMorphMeasurementRequest", () => {
     const request = createMorphMeasurementRequest({
       text: "OpenWindow",
       layoutContext: createLayoutContext({
+        measurementCause: "font-metrics",
         whiteSpace: "nowrap",
         measurementStability: "live",
       }),
@@ -117,12 +119,43 @@ describe("createMorphMeasurementRequest", () => {
     expect(request?.domMeasurementKey).not.toBeNull();
   });
 
-  test("keeps final settling on dom before returning to stable fast paths", () => {
+  test("keeps root-motion live sampling on the pretext fast path when content width is locked", () => {
     const request = createMorphMeasurementRequest({
       text: "OpenWindow",
       layoutContext: createLayoutContext({
+        measurementCause: "root-motion",
+        whiteSpace: "nowrap",
+        measurementStability: "live",
+      }),
+      layoutHint: null,
+    });
+
+    expect(request?.measurementBackend).toBe("pretext");
+    expect(request?.domMeasurementKey).toBeNull();
+  });
+
+  test("keeps root-motion settling on the pretext fast path when content width is locked", () => {
+    const request = createMorphMeasurementRequest({
+      text: "OpenWindow",
+      layoutContext: createLayoutContext({
+        measurementCause: "root-motion",
         whiteSpace: "nowrap",
         measurementStability: "finalize",
+      }),
+      layoutHint: null,
+    });
+
+    expect(request?.measurementBackend).toBe("pretext");
+    expect(request?.domMeasurementKey).toBeNull();
+  });
+
+  test("still uses dom sampling for root-motion when wrapping geometry can change", () => {
+    const request = createMorphMeasurementRequest({
+      text: "Open Window",
+      layoutContext: createLayoutContext({
+        measurementCause: "root-motion",
+        whiteSpace: "normal",
+        measurementStability: "live",
       }),
       layoutHint: null,
     });

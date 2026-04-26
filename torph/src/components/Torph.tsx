@@ -1,18 +1,13 @@
 import {
-  type CSSProperties,
   type Dispatch,
   type ReactElement,
-  type RefObject,
   type SetStateAction,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { motion } from "motion/react";
-import {
-  type PretextMorphMeasurementBackend,
-} from "../utils/text-layout/pretextMorph";
+import { type PretextMorphMeasurementBackend } from "../utils/text-layout/pretextMorph";
 import {
   canCacheMeasurementLayerSnapshot as canCacheMeasurementLayerSnapshotModel,
   createMorphMeasurementRequest as createMorphMeasurementRequestModel,
@@ -26,13 +21,19 @@ import {
   type MorphFinalizeSignal,
 } from "../core/finalize-barrier";
 import {
+  rebaseActiveMorphState as rebaseActiveMorphStateModel,
+  selectSessionMeasurementObservation as selectSessionMeasurementObservationModel,
+  shouldRebaseObservedActiveMorphState as shouldRebaseObservedActiveMorphStateModel,
+} from "../core/reference-frame";
+import {
   areFontsReady as areFontsReadyModel,
   cancelTimeline as cancelTimelineModel,
+  type MorphSessionDecision,
   finalizeMorphTransition as finalizeMorphTransitionModel,
   reconcileMorphSessionUpdate as reconcileMorphSessionUpdateModel,
   resetMorph as resetMorphModel,
-  resolvePreparedMeasurementOrigin as resolvePreparedMeasurementOriginModel,
-  resolvePreparedPlanVisualBridge as resolvePreparedPlanVisualBridgeModel,
+  resolveFinalizeMeasurement as resolveFinalizeMeasurementModel,
+  resolvePreparedMorphState as resolvePreparedMorphStateModel,
   selectMorphLayoutHint as selectMorphLayoutHintModel,
 } from "../core/session";
 import { useObservedLayoutContext } from "../core/layout-observer";
@@ -46,13 +47,6 @@ import {
   rememberCachedMorphSnapshot,
 } from "../core/dom-measurement";
 import {
-  createSteadyGlyphPlan as createSteadyGlyphPlanModel,
-  getExitTransform as getExitTransformModel,
-  getExitTransition as getExitTransitionModel,
-  getLiveTransform as getLiveTransformModel,
-  getLiveTransition as getLiveTransitionModel,
-  getMeasurementLayerStyle as getMeasurementLayerStyleModel,
-  getOverlayStyle as getOverlayStyleModel,
   getRootStyle as getRootStyleModel,
   resolveGlyphSliceWhiteSpace as resolveGlyphSliceWhiteSpaceModel,
   resolveFlowText as resolveFlowTextModel,
@@ -65,7 +59,6 @@ import {
   EMPTY_TIMELINE,
   MORPH,
   type LayoutContext,
-  type MorphCharacterLayout,
   type MorphLiveItem,
   type MorphMeasurement,
   type MorphRenderPlan,
@@ -88,67 +81,19 @@ import {
   shouldRunTorphInstrumentation,
   summarizeDebugLayoutContext,
   summarizeDebugMeasurement,
+  summarizeDebugMeasurementAnchors,
   summarizeDebugRect,
   summarizeDebugRootOriginDrift,
   summarizeDebugSnapshot,
   summarizeDebugViewportAnchors,
   summarizeSnapshotDrift,
 } from "../debug/trace";
-
-const SCREEN_READER_ONLY_STYLE = {
-  position: "absolute",
-  width: "1px",
-  height: "1px",
-  margin: "-1px",
-  padding: 0,
-  border: 0,
-  clip: "rect(0 0 0 0)",
-  clipPath: "inset(50%)",
-  overflow: "hidden",
-  whiteSpace: "nowrap",
-} satisfies CSSProperties;
-
-const FALLBACK_TEXT_STYLE = {
-  display: "block",
-  gridArea: "1 / 1",
-  whiteSpace: "nowrap",
-} satisfies CSSProperties;
-
-const FLOW_TEXT_LAYOUT_STYLE = {
-  display: "inline-block",
-} satisfies CSSProperties;
-
-const SHARED_GLYPH_TYPOGRAPHY_STYLE = {
-  font: "inherit",
-  fontKerning: "inherit",
-  fontFeatureSettings: "inherit",
-  fontOpticalSizing: "inherit",
-  fontStretch: "inherit",
-  fontStyle: "inherit",
-  fontVariant: "inherit",
-  fontVariantNumeric: "inherit",
-  fontVariationSettings: "inherit",
-  fontWeight: "inherit",
-  letterSpacing: "inherit",
-  textTransform: "inherit",
-  wordSpacing: "inherit",
-  direction: "inherit",
-} satisfies CSSProperties;
-
-const ABSOLUTE_GLYPH_STYLE = {
-  position: "absolute",
-  display: "block",
-  overflow: "hidden",
-  transformOrigin: "left top",
-} satisfies CSSProperties;
-
-const CONTEXT_SLICE_TEXT_STYLE = {
-  ...SHARED_GLYPH_TYPOGRAPHY_STYLE,
-  position: "absolute",
-  display: "block",
-  minWidth: 0,
-  whiteSpace: "inherit",
-} satisfies CSSProperties;
+import {
+  FlowTextLayer,
+  MeasurementLayer,
+  MorphOverlay,
+  getScreenReaderOnlyStyle,
+} from "./Torph.layers";
 
 const debugDomNodeIds = new WeakMap<object, number>();
 let debugDomNodeOrdinal = 0;
@@ -177,6 +122,8 @@ function reconcileMorphChange({
   renderText,
   segments,
   layoutContext,
+  stateStage,
+  visibleMeasurement,
   session,
   timeline,
   setState,
@@ -189,6 +136,8 @@ function reconcileMorphChange({
   renderText: string;
   segments: readonly MorphSegment[];
   layoutContext: LayoutContext | null;
+  stateStage: MorphStage;
+  visibleMeasurement: MorphMeasurement | null;
   session: MorphSession;
   timeline: MorphTimeline;
   setState: Dispatch<SetStateAction<MorphState>>;
@@ -214,90 +163,34 @@ function reconcileMorphChange({
     renderText,
     segments,
   });
+  const observedMeasurement = selectSessionMeasurementObservationModel({
+    measurementCause: layoutContext.measurementCause,
+    session,
+    nextMeasurement,
+    measurementStability: layoutContext.measurementStability,
+    stateStage,
+    visibleMeasurement,
+  });
 
-  return reconcileMorphSessionUpdateModel({
+  const result = reconcileMorphSessionUpdateModel({
     session,
     timeline,
-    nextMeasurement,
+    nextMeasurement: observedMeasurement,
     fontsReady: areFontsReadyModel(),
     setState,
   });
-}
-
-function getLiveOpacity(item: MorphLiveItem, stage: MorphStage) {
-  if (stage === "prepare" && item.kind === "enter") {
-    return 0;
+  if (
+    shouldRebaseObservedActiveMorphStateModel({
+      stateStage,
+      decisionKind: result.decision.kind,
+    })
+  ) {
+    setState((current) =>
+      rebaseActiveMorphStateModel(current, result.appliedMeasurement.rootOrigin),
+    );
   }
 
-  return 1;
-}
-
-function getExitOpacity(stage: MorphStage) {
-  if (stage === "animate") {
-    return 0;
-  }
-
-  return 1;
-}
-
-export function getFallbackTextStyle(shouldHideFlowText: boolean): CSSProperties {
-  if (!shouldHideFlowText) {
-    return FALLBACK_TEXT_STYLE;
-  }
-
-  return {
-    ...FALLBACK_TEXT_STYLE,
-    visibility: "hidden",
-    pointerEvents: "none",
-  };
-}
-
-function getLiveGlyphStyle(
-  item: MorphLiveItem,
-  stage: MorphStage,
-  visualBridge: MorphVisualBridge,
-): CSSProperties {
-  return {
-    ...ABSOLUTE_GLYPH_STYLE,
-    left: item.left,
-    top: item.top,
-    width: item.width,
-    height: item.height,
-    opacity: getLiveOpacity(item, stage),
-    transform: getLiveTransformModel(item, stage, visualBridge),
-    transition: getLiveTransitionModel(item, stage),
-  };
-}
-
-function getExitGlyphStyle(
-  item: MorphCharacterLayout,
-  stage: MorphStage,
-  visualBridge: MorphVisualBridge,
-): CSSProperties {
-  return {
-    ...ABSOLUTE_GLYPH_STYLE,
-    left: item.left,
-    top: item.top,
-    width: item.width,
-    height: item.height,
-    opacity: getExitOpacity(stage),
-    transform: getExitTransformModel(visualBridge),
-    transition: getExitTransitionModel(stage),
-  };
-}
-
-function getContextSliceStyle(
-  layoutInlineSize: number,
-  item: MorphCharacterLayout,
-  whiteSpace: "inherit" | "nowrap",
-): CSSProperties {
-  return {
-    ...CONTEXT_SLICE_TEXT_STYLE,
-    left: -item.left,
-    top: -item.top,
-    width: layoutInlineSize,
-    whiteSpace,
-  };
+  return result;
 }
 
 function summarizePreciseRect(rect: DOMRect | null) {
@@ -313,10 +206,7 @@ function summarizePreciseRect(rect: DOMRect | null) {
   };
 }
 
-function summarizePreciseGlyphs(
-  snapshot: MorphSnapshot | null,
-  rootRect: DOMRect | null,
-) {
+function summarizePreciseGlyphs(snapshot: MorphSnapshot | null, rootRect: DOMRect | null) {
   if (snapshot === null) {
     return null;
   }
@@ -329,10 +219,8 @@ function summarizePreciseGlyphs(
     top: roundDebugValue(grapheme.top),
     width: roundDebugValue(grapheme.width),
     height: roundDebugValue(grapheme.height),
-    viewportLeft:
-      rootRect === null ? null : roundDebugValue(rootRect.left + grapheme.left),
-    viewportTop:
-      rootRect === null ? null : roundDebugValue(rootRect.top + grapheme.top),
+    viewportLeft: rootRect === null ? null : roundDebugValue(rootRect.left + grapheme.left),
+    viewportTop: rootRect === null ? null : roundDebugValue(rootRect.top + grapheme.top),
   }));
 }
 
@@ -341,58 +229,61 @@ function summarizeLiveNodeStyles(overlayNode: HTMLDivElement | null) {
     return null;
   }
 
-  return Array.from(
-    overlayNode.querySelectorAll<HTMLElement>("[data-morph-role='live']"),
-  ).map((node, index) => {
-    const styles = getComputedStyle(node);
-    const sliceNode = node.firstElementChild;
-    let sliceStyles: CSSStyleDeclaration | null = null;
-    let sliceRect: DOMRect | null = null;
-    if (sliceNode instanceof HTMLElement) {
-      sliceStyles = getComputedStyle(sliceNode);
-      sliceRect = sliceNode.getBoundingClientRect();
-    }
+  return Array.from(overlayNode.querySelectorAll<HTMLElement>("[data-morph-role='live']")).map(
+    (node, index) => {
+      const styles = getComputedStyle(node);
+      const sliceNode = node.firstElementChild;
+      let sliceStyles: CSSStyleDeclaration | null = null;
+      let sliceRect: DOMRect | null = null;
+      if (sliceNode instanceof HTMLElement) {
+        sliceStyles = getComputedStyle(sliceNode);
+        sliceRect = sliceNode.getBoundingClientRect();
+      }
 
-    let nodeRect: DOMRect | null = null;
-    nodeRect = node.getBoundingClientRect();
+      let nodeRect: DOMRect | null = null;
+      nodeRect = node.getBoundingClientRect();
 
-    let sliceScrollWidth: number | null = null;
-    let sliceClientWidth: number | null = null;
-    let sliceOffsetWidth: number | null = null;
-    if (sliceNode instanceof HTMLElement) {
-      sliceScrollWidth = sliceNode.scrollWidth;
-      sliceClientWidth = sliceNode.clientWidth;
-      sliceOffsetWidth = sliceNode.offsetWidth;
-    }
+      let sliceScrollWidth: number | null = null;
+      let sliceClientWidth: number | null = null;
+      let sliceOffsetWidth: number | null = null;
+      if (sliceNode instanceof HTMLElement) {
+        sliceScrollWidth = sliceNode.scrollWidth;
+        sliceClientWidth = sliceNode.clientWidth;
+        sliceOffsetWidth = sliceNode.offsetWidth;
+      }
 
-    return {
-      index,
-      nodeId: getDebugDomNodeId(node),
-      key: node.dataset.morphKey ?? null,
-      glyph: node.dataset.morphGlyph ?? null,
-      kind: node.dataset.morphKind ?? null,
-      transform: styles.transform,
-      inlineTransform: node.style.transform,
-      opacity: styles.opacity,
-      transitionProperty: styles.transitionProperty,
-      transitionDuration: styles.transitionDuration,
-      transitionTimingFunction: styles.transitionTimingFunction,
-      nodeRect: summarizePreciseRect(nodeRect),
-      sliceNodeId: getDebugDomNodeId(sliceNode),
-      sliceInlineLeft: node.firstElementChild instanceof HTMLElement ? node.firstElementChild.style.left : null,
-      sliceInlineTop: node.firstElementChild instanceof HTMLElement ? node.firstElementChild.style.top : null,
-      sliceInlineWidth: node.firstElementChild instanceof HTMLElement ? node.firstElementChild.style.width : null,
-      sliceLeft: sliceStyles?.left ?? null,
-      sliceTop: sliceStyles?.top ?? null,
-      sliceWidth: sliceStyles?.width ?? null,
-      sliceWhiteSpace: sliceStyles?.whiteSpace ?? null,
-      sliceText: sliceNode instanceof HTMLElement ? sliceNode.textContent : null,
-      sliceRect: summarizePreciseRect(sliceRect),
-      sliceScrollWidth: roundDebugValue(sliceScrollWidth),
-      sliceClientWidth: roundDebugValue(sliceClientWidth),
-      sliceOffsetWidth: roundDebugValue(sliceOffsetWidth),
-    };
-  });
+      return {
+        index,
+        nodeId: getDebugDomNodeId(node),
+        key: node.dataset.morphKey ?? null,
+        glyph: node.dataset.morphGlyph ?? null,
+        kind: node.dataset.morphKind ?? null,
+        transform: styles.transform,
+        inlineTransform: node.style.transform,
+        opacity: styles.opacity,
+        transitionProperty: styles.transitionProperty,
+        transitionDuration: styles.transitionDuration,
+        transitionTimingFunction: styles.transitionTimingFunction,
+        nodeRect: summarizePreciseRect(nodeRect),
+        sliceNodeId: getDebugDomNodeId(sliceNode),
+        sliceInlineLeft:
+          node.firstElementChild instanceof HTMLElement ? node.firstElementChild.style.left : null,
+        sliceInlineTop:
+          node.firstElementChild instanceof HTMLElement ? node.firstElementChild.style.top : null,
+        sliceInlineWidth:
+          node.firstElementChild instanceof HTMLElement ? node.firstElementChild.style.width : null,
+        sliceLeft: sliceStyles?.left ?? null,
+        sliceTop: sliceStyles?.top ?? null,
+        sliceWidth: sliceStyles?.width ?? null,
+        sliceWhiteSpace: sliceStyles?.whiteSpace ?? null,
+        sliceText: sliceNode instanceof HTMLElement ? sliceNode.textContent : null,
+        sliceRect: summarizePreciseRect(sliceRect),
+        sliceScrollWidth: roundDebugValue(sliceScrollWidth),
+        sliceClientWidth: roundDebugValue(sliceClientWidth),
+        sliceOffsetWidth: roundDebugValue(sliceOffsetWidth),
+      };
+    },
+  );
 }
 
 function summarizeRootRuntimeStyles(root: HTMLDivElement | null) {
@@ -435,129 +326,75 @@ function summarizeRootRuntimeStyles(root: HTMLDivElement | null) {
   };
 }
 
-function MorphOverlay({
-  overlayRef,
-  stage,
-  plan,
-  sourceSliceWhiteSpace,
-  targetSliceWhiteSpace,
-}: {
-  overlayRef?: RefObject<HTMLDivElement | null>;
-  stage: MorphStage;
-  plan: MorphRenderPlan;
-  sourceSliceWhiteSpace: "inherit" | "nowrap";
-  targetSliceWhiteSpace: "inherit" | "nowrap";
-}) {
-  let exitItems: MorphCharacterLayout[] = [];
-  if (stage !== "idle") {
-    exitItems = plan.exitItems;
+function summarizeNullableDelta(nextValue: number | null, previousValue: number | null) {
+  if (nextValue === null || previousValue === null) {
+    if (nextValue === previousValue) {
+      return 0;
+    }
+
+    return null;
   }
 
-  return (
-    <div
-      ref={overlayRef}
-      aria-hidden="true"
-      style={getOverlayStyleModel(stage, plan)}
-    >
-      {exitItems.map((item) => (
-        <span
-          key={`exit-${item.key}`}
-          data-morph-role="exit"
-          data-morph-key={item.key}
-          data-morph-glyph={item.glyph}
-          style={getExitGlyphStyle(item, stage, plan.visualBridge)}
-        >
-          <span
-            data-morph-slice="context"
-            style={getContextSliceStyle(
-              plan.layoutInlineSizeFrom,
-              item,
-              sourceSliceWhiteSpace,
-            )}
-          >
-            {plan.sourceRenderText}
-          </span>
-        </span>
-      ))}
-      {plan.liveItems.map((item) => (
-        <span
-          key={item.key}
-          data-morph-role="live"
-          data-morph-key={item.key}
-          data-morph-glyph={item.glyph}
-          data-morph-kind={item.kind}
-          style={getLiveGlyphStyle(item, stage, plan.visualBridge)}
-        >
-          <span
-            data-morph-slice="context"
-            style={getContextSliceStyle(
-              plan.layoutInlineSizeTo,
-              item,
-              targetSliceWhiteSpace,
-            )}
-          >
-            {plan.targetRenderText}
-          </span>
-        </span>
-      ))}
-    </div>
-  );
+  return roundDebugValue(nextValue - previousValue);
 }
 
-type MeasurementLayerProps = {
-  layerRef: RefObject<HTMLSpanElement | null>;
-  layoutContext: LayoutContext | null;
-  text: string;
-  useContentInlineSize: boolean;
-};
-
-function MeasurementLayer({
-  layerRef,
-  layoutContext,
-  text,
-  useContentInlineSize,
-}: MeasurementLayerProps) {
-  return (
-    <span
-      ref={layerRef}
-      aria-hidden="true"
-      style={getMeasurementLayerStyleModel(layoutContext, useContentInlineSize)}
-    >
-      {text}
-    </span>
-  );
-}
-
-type FlowTextLayerProps = {
-  flowText: string;
-  flowTextRef: RefObject<HTMLSpanElement | null>;
-  layoutId: string | null;
-  shouldHideFlowText: boolean;
-};
-
-export function FlowTextLayer({
-  flowText,
-  flowTextRef,
-  layoutId,
-  shouldHideFlowText,
-}: FlowTextLayerProps) {
-  return (
-    <span aria-hidden="true" style={getFallbackTextStyle(shouldHideFlowText)}>
-      <motion.span
-        ref={flowTextRef}
-        layoutId={layoutId ?? undefined}
-        style={FLOW_TEXT_LAYOUT_STYLE}
-      >
-        {flowText}
-      </motion.span>
-    </span>
-  );
-}
-
-function isMorphOverlayTransformFinalizeEvent(
-  event: TransitionEvent,
-  hasMoveTransitions: boolean,
+function summarizeMeasurementComparison(
+  reference: MorphMeasurement | null,
+  nextMeasurement: MorphMeasurement,
 ) {
+  if (reference === null) {
+    return null;
+  }
+
+  return {
+    layoutInlineSizeDelta: roundDebugValue(
+      nextMeasurement.layoutInlineSize - reference.layoutInlineSize,
+    ),
+    reservedInlineSizeDelta: summarizeNullableDelta(
+      nextMeasurement.reservedInlineSize,
+      reference.reservedInlineSize,
+    ),
+    flowInlineSizeDelta: summarizeNullableDelta(
+      nextMeasurement.flowInlineSize,
+      reference.flowInlineSize,
+    ),
+    rootOriginDelta: {
+      left: roundDebugValue(nextMeasurement.rootOrigin.left - reference.rootOrigin.left),
+      top: roundDebugValue(nextMeasurement.rootOrigin.top - reference.rootOrigin.top),
+    },
+    snapshotDelta: summarizeSnapshotDrift(
+      measureSnapshotDrift(reference.snapshot, nextMeasurement.snapshot),
+    ),
+  };
+}
+
+function summarizeSessionDecision(decision: MorphSessionDecision) {
+  if (decision.kind === "freeze-animating-target") {
+    return {
+      kind: decision.kind,
+      target: summarizeDebugMeasurement(decision.target),
+      targetAnchors: summarizeDebugMeasurementAnchors(decision.target),
+    };
+  }
+
+  if (decision.kind === "commit-static") {
+    return {
+      kind: decision.kind,
+      measurement: summarizeDebugMeasurement(decision.measurement),
+      measurementAnchors: summarizeDebugMeasurementAnchors(decision.measurement),
+    };
+  }
+
+  return {
+    kind: decision.kind,
+    source: summarizeDebugMeasurement(decision.source),
+    sourceAnchors: summarizeDebugMeasurementAnchors(decision.source),
+    target: summarizeDebugMeasurement(decision.target),
+    targetAnchors: summarizeDebugMeasurementAnchors(decision.target),
+  };
+}
+
+function isMorphOverlayTransformFinalizeEvent(event: TransitionEvent, hasMoveTransitions: boolean) {
   if (!hasMoveTransitions) {
     return false;
   }
@@ -585,9 +422,44 @@ function resolveMorphFinalizeSignal(
   return null;
 }
 
-function useMorphTransition(text: string, className?: string) {
+type PreparedMorphSnapshot = {
+  measurement: MorphMeasurement;
+  plan: MorphRenderPlan;
+};
+
+type PreparedMorphRefinement = PreparedMorphSnapshot & {
+  origin: { left: number; top: number };
+  changed: boolean;
+};
+
+function readPreparedMorphRefinement(
+  root: HTMLElement,
+  preparedState: PreparedMorphSnapshot,
+): PreparedMorphRefinement {
+  const origin = readRootOrigin(root);
+  const refinement = resolvePreparedMorphStateModel(
+    preparedState.measurement,
+    preparedState.plan,
+    origin,
+  );
+
+  return {
+    origin,
+    measurement: refinement.measurement,
+    plan: refinement.plan,
+    changed: refinement.changed,
+  };
+}
+
+function useMorphTransition(
+  text: string,
+  className?: string,
+  debugLabel?: string | null,
+  debugMeta?: Record<string, unknown> | null,
+) {
   const [state, setState] = useState<MorphState>(EMPTY_STATE);
-  const { ref, layoutContext } = useObservedLayoutContext<HTMLDivElement>([
+  const latestStateRef = useRef(state);
+  const { ref, layoutContext, motionFrameVersion } = useObservedLayoutContext<HTMLDivElement>([
     className,
   ]);
   const debugInstanceIdRef = useRef<number | null>(null);
@@ -600,6 +472,7 @@ function useMorphTransition(text: string, className?: string) {
   const timelineRef = useRef<MorphTimeline>({ ...EMPTY_TIMELINE });
   const debugDriftSignatureRef = useRef<string | null>(null);
   const [domMeasurementRequestKey, setDomMeasurementRequestKey] = useState<string | null>(null);
+  latestStateRef.current = state;
   debugRenderOrdinalRef.current += 1;
   const debugRenderOrdinal = debugRenderOrdinalRef.current;
   if (debugInstanceIdRef.current === null) {
@@ -621,10 +494,7 @@ function useMorphTransition(text: string, className?: string) {
   const measurementBackend = measurementRequest?.measurementBackend ?? null;
   const segments = measurementRequest?.segments ?? EMPTY_SEGMENTS;
   const domMeasurementKey = measurementRequest?.domMeasurementKey ?? null;
-  const logTransitionTrace = (
-    event: string,
-    payload: Record<string, unknown> = {},
-  ) => {
+  const logTransitionTrace = (event: string, payload: Record<string, unknown> = {}) => {
     const config = readTorphDebugConfig();
     if (!shouldRunTorphInstrumentation(config)) {
       return;
@@ -632,6 +502,8 @@ function useMorphTransition(text: string, className?: string) {
 
     logTorphDebug(debugInstanceIdRef.current!, event, {
       traceSchemaVersion: TORPH_TRACE_SCHEMA_VERSION,
+      debugLabel,
+      debugMeta,
       renderOrdinal: debugRenderOrdinal,
       text,
       renderText,
@@ -645,6 +517,38 @@ function useMorphTransition(text: string, className?: string) {
       domMeasurementRequestKey,
       completedDomMeasurementKey: completedDomMeasurementKeyRef.current,
       ...payload,
+    });
+  };
+
+  const logMeasurementReconcile = ({
+    reason,
+    committedBefore,
+    targetBefore,
+    result,
+  }: {
+    reason: string;
+    committedBefore: MorphMeasurement | null;
+    targetBefore: MorphMeasurement | null;
+    result: ReturnType<typeof reconcileMorphSessionUpdateModel>;
+  }) => {
+    logTransitionTrace("effect:measurement-reconcile", {
+      reason,
+      committedBefore: summarizeDebugMeasurement(committedBefore),
+      committedBeforeAnchors: summarizeDebugMeasurementAnchors(committedBefore),
+      targetBefore: summarizeDebugMeasurement(targetBefore),
+      targetBeforeAnchors: summarizeDebugMeasurementAnchors(targetBefore),
+      nextMeasurement: summarizeDebugMeasurement(result.nextMeasurement),
+      nextMeasurementAnchors: summarizeDebugMeasurementAnchors(result.nextMeasurement),
+      appliedMeasurement: summarizeDebugMeasurement(result.appliedMeasurement),
+      appliedMeasurementAnchors: summarizeDebugMeasurementAnchors(result.appliedMeasurement),
+      decision: summarizeSessionDecision(result.decision),
+      nextVsCommitted: summarizeMeasurementComparison(committedBefore, result.nextMeasurement),
+      nextVsTarget: summarizeMeasurementComparison(targetBefore, result.nextMeasurement),
+      appliedVsCommitted: summarizeMeasurementComparison(
+        committedBefore,
+        result.appliedMeasurement,
+      ),
+      appliedVsTarget: summarizeMeasurementComparison(targetBefore, result.appliedMeasurement),
     });
   };
 
@@ -672,6 +576,8 @@ function useMorphTransition(text: string, className?: string) {
         renderText,
         segments,
         layoutContext,
+        stateStage: state.stage,
+        visibleMeasurement: state.measurement,
         session: sessionRef.current,
         timeline: timelineRef.current,
         setState,
@@ -688,6 +594,8 @@ function useMorphTransition(text: string, className?: string) {
         );
       }
       if (cachedSnapshot !== null) {
+        const committedBefore = sessionRef.current.committed;
+        const targetBefore = sessionRef.current.target;
         completedDomMeasurementKeyRef.current = domMeasurementKey;
         if (domMeasurementRequestKey !== null) {
           logTransitionTrace("effect:dom-measurement-request-update", {
@@ -698,7 +606,7 @@ function useMorphTransition(text: string, className?: string) {
           setDomMeasurementRequestKey(null);
         }
 
-        reconcileMorphChange({
+        const result = reconcileMorphChange({
           root: ref.current,
           measurementLayer: null,
           measurementBackend,
@@ -707,10 +615,20 @@ function useMorphTransition(text: string, className?: string) {
           renderText,
           segments,
           layoutContext,
+          stateStage: state.stage,
+          visibleMeasurement: state.measurement,
           session: sessionRef.current,
           timeline: timelineRef.current,
           setState,
         });
+        if (result !== null) {
+          logMeasurementReconcile({
+            reason: "cache-hit",
+            committedBefore,
+            targetBefore,
+            result,
+          });
+        }
         return;
       }
 
@@ -731,7 +649,9 @@ function useMorphTransition(text: string, className?: string) {
           return;
         }
 
-        const nextMeasurement = reconcileMorphChange({
+        const committedBefore = sessionRef.current.committed;
+        const targetBefore = sessionRef.current.target;
+        const result = reconcileMorphChange({
           root: ref.current,
           measurementLayer: measurementLayerRef.current,
           measurementBackend,
@@ -740,16 +660,24 @@ function useMorphTransition(text: string, className?: string) {
           renderText,
           segments,
           layoutContext,
+          stateStage: state.stage,
+          visibleMeasurement: state.measurement,
           session: sessionRef.current,
           timeline: timelineRef.current,
           setState,
         });
-        if (nextMeasurement !== null) {
+        if (result !== null) {
+          logMeasurementReconcile({
+            reason: "live-layer",
+            committedBefore,
+            targetBefore,
+            result,
+          });
           if (canCacheMeasurementLayerSnapshotModel(measurementBackend)) {
             rememberCachedMorphSnapshot(
               domMeasurementSnapshotCacheRef.current,
               domMeasurementKey,
-              nextMeasurement.snapshot,
+              result.nextMeasurement.snapshot,
             );
           }
         }
@@ -785,7 +713,9 @@ function useMorphTransition(text: string, className?: string) {
       setDomMeasurementRequestKey(null);
     }
 
-    const nextMeasurement = reconcileMorphChange({
+    const committedBefore = sessionRef.current.committed;
+    const targetBefore = sessionRef.current.target;
+    const result = reconcileMorphChange({
       root: ref.current,
       measurementLayer: measurementLayerRef.current,
       measurementBackend,
@@ -794,15 +724,26 @@ function useMorphTransition(text: string, className?: string) {
       renderText,
       segments,
       layoutContext,
+      stateStage: state.stage,
+      visibleMeasurement: state.measurement,
       session: sessionRef.current,
       timeline: timelineRef.current,
       setState,
     });
+    if (result !== null) {
+      logMeasurementReconcile({
+        reason: "no-dom-measurement",
+        committedBefore,
+        targetBefore,
+        result,
+      });
+    }
   }, [
     text,
     renderText,
     segments,
     layoutContext,
+    motionFrameVersion,
     measurementBackend,
     measurementRequest,
     domMeasurementKey,
@@ -873,68 +814,92 @@ function useMorphTransition(text: string, className?: string) {
   }, []);
 
   useLayoutEffect(() => {
-    if (state.stage !== "prepare" || state.measurement === null || state.plan === null) {
+    if (state.stage !== "prepare") {
       return;
     }
 
-    const root = ref.current;
-    if (root === null) {
-      return;
-    }
+    const readPreparedState = () => {
+      const current = latestStateRef.current;
+      if (current.stage !== "prepare" || current.measurement === null || current.plan === null) {
+        return null;
+      }
 
-    const nextOrigin = readRootOrigin(root);
-    const nextMeasurement = resolvePreparedMeasurementOriginModel(
-      state.measurement,
-      nextOrigin,
-    );
-    const nextPlan = resolvePreparedPlanVisualBridgeModel(state.plan, nextOrigin);
-    if (nextMeasurement !== state.measurement || nextPlan !== state.plan) {
-      sessionRef.current.target = nextMeasurement;
-      logTransitionTrace("effect:prepare-refine", {
-        preparedOrigin: {
-          left: roundDebugValue(nextOrigin.left),
-          top: roundDebugValue(nextOrigin.top),
-        },
-        refinedMeasurement: summarizeDebugMeasurement(nextMeasurement),
-        refinedVisualBridge: {
-          offsetX: roundDebugValue(nextPlan.visualBridge.offsetX),
-          offsetY: roundDebugValue(nextPlan.visualBridge.offsetY),
-        },
-      });
-      setState((current) => {
-        if (
-          current.stage !== "prepare" ||
-          current.measurement === null ||
-          current.plan === null
-        ) {
-          return current;
-        }
+      return {
+        measurement: current.measurement,
+        plan: current.plan,
+      } satisfies PreparedMorphSnapshot;
+    };
 
-        if (current.measurement === nextMeasurement && current.plan === nextPlan) {
-          return current;
-        }
+    const refinePreparedState = (reason: string) => {
+      const currentRoot = ref.current;
+      const preparedState = readPreparedState();
+      if (currentRoot === null || preparedState === null) {
+        return null;
+      }
 
-        return {
-          stage: "prepare",
-          measurement: nextMeasurement,
-          plan: nextPlan,
-        };
-      });
-      return;
-    }
+      const refinement = readPreparedMorphRefinement(currentRoot, preparedState);
+      if (
+        sessionRef.current.animating &&
+        sessionRef.current.target !== null &&
+        sessionRef.current.target.snapshot.renderText ===
+          preparedState.measurement.snapshot.renderText
+      ) {
+        sessionRef.current.target = refinement.measurement;
+      }
+
+      if (refinement.changed) {
+        logTransitionTrace("effect:prepare-refine", {
+          reason,
+          preparedOrigin: {
+            left: roundDebugValue(refinement.origin.left),
+            top: roundDebugValue(refinement.origin.top),
+          },
+          refinedMeasurement: summarizeDebugMeasurement(refinement.measurement),
+          refinedVisualBridge: {
+            offsetX: roundDebugValue(refinement.plan.visualBridge.offsetX),
+            offsetY: roundDebugValue(refinement.plan.visualBridge.offsetY),
+          },
+        });
+        setState((current) => {
+          if (
+            current.stage !== "prepare" ||
+            current.measurement !== preparedState.measurement ||
+            current.plan !== preparedState.plan
+          ) {
+            return current;
+          }
+
+          return {
+            ...current,
+            measurement: refinement.measurement,
+            plan: refinement.plan,
+          };
+        });
+      }
+
+      return refinement;
+    };
+
+    refinePreparedState("prepare-layout");
 
     timelineRef.current.prepareFrame = requestAnimationFrame(() => {
       timelineRef.current.prepareFrame = null;
+      refinePreparedState("prepare-frame");
       timelineRef.current.animateFrame = requestAnimationFrame(() => {
         timelineRef.current.animateFrame = null;
+        const animateFrameRefinement = refinePreparedState("animate-frame");
+        if (animateFrameRefinement === null) {
+          return;
+        }
+
         logTransitionTrace("effect:prepare-animate", {
           preparedOrigin: {
-            left: roundDebugValue(nextOrigin.left),
-            top: roundDebugValue(nextOrigin.top),
+            left: roundDebugValue(animateFrameRefinement.origin.left),
+            top: roundDebugValue(animateFrameRefinement.origin.top),
           },
           visualBridge: {
-            offsetX: roundDebugValue(nextPlan.visualBridge.offsetX),
-            offsetY: roundDebugValue(nextPlan.visualBridge.offsetY),
+            offsetX: roundDebugValue(animateFrameRefinement.plan.visualBridge.offsetX),
+            offsetY: roundDebugValue(animateFrameRefinement.plan.visualBridge.offsetY),
           },
         });
         setState((current) => {
@@ -948,8 +913,8 @@ function useMorphTransition(text: string, className?: string) {
 
           return {
             stage: "animate",
-            measurement: current.measurement,
-            plan: current.plan,
+            measurement: animateFrameRefinement.measurement,
+            plan: animateFrameRefinement.plan,
           };
         });
       });
@@ -966,7 +931,7 @@ function useMorphTransition(text: string, className?: string) {
         timelineRef.current.animateFrame = null;
       }
     };
-  }, [state.measurement, state.plan, state.stage]);
+  }, [state.stage]);
 
   const finalizeMorphTransition = (measurement: MorphMeasurement, reason: string) => {
     logTransitionTrace("effect:finalize-trigger", {
@@ -1004,11 +969,15 @@ function useMorphTransition(text: string, className?: string) {
 function ActiveTorph({
   text,
   className,
-  layoutId = null,
+  debugLabel = null,
+  debugMeta = null,
+  onStageChange,
 }: {
   text: string;
   className?: string;
-  layoutId?: string | null;
+  debugLabel?: string | null;
+  debugMeta?: Record<string, unknown> | null;
+  onStageChange?: (stage: MorphStage) => void;
 }) {
   const debugRenderOrdinalRef = useRef(0);
   const overlayRef = useRef<HTMLDivElement | null>(null);
@@ -1040,26 +1009,18 @@ function ActiveTorph({
     useContentInlineSize,
     finalizeMorphTransition,
     timelineRef,
-  } = useMorphTransition(text, className);
-
+  } = useMorphTransition(text, className, debugLabel, debugMeta);
   const plan = state.plan;
-  let visibleGlyphPlan: MorphRenderPlan | null = plan;
-  if (state.stage === "idle" && state.measurement !== null) {
-    visibleGlyphPlan = createSteadyGlyphPlanModel(state.measurement);
-  }
+  const visibleGlyphPlan: MorphRenderPlan | null = plan;
 
   let sourceSliceWhiteSpace: "inherit" | "nowrap" = "inherit";
   if (committedMeasurement !== null) {
-    sourceSliceWhiteSpace = resolveGlyphSliceWhiteSpaceModel(
-      committedMeasurement.snapshot,
-    );
+    sourceSliceWhiteSpace = resolveGlyphSliceWhiteSpaceModel(committedMeasurement.snapshot);
   }
 
   let targetSliceWhiteSpace: "inherit" | "nowrap" = "inherit";
   if (state.measurement !== null) {
-    targetSliceWhiteSpace = resolveGlyphSliceWhiteSpaceModel(
-      state.measurement.snapshot,
-    );
+    targetSliceWhiteSpace = resolveGlyphSliceWhiteSpaceModel(state.measurement.snapshot);
   }
 
   const shouldRenderGlyphLayer = shouldRenderGlyphLayerModel(
@@ -1079,12 +1040,14 @@ function ActiveTorph({
 
     logTorphDebug(debugInstanceId, "effect:trace-meta", {
       traceSchemaVersion: TORPH_TRACE_SCHEMA_VERSION,
+      debugLabel,
+      debugMeta,
       includesIdlePostFrame: true,
       includesIdlePostFrameLifecycle: true,
       includesViewportAnchors: true,
       includesRootOriginRefine: true,
       includesFullGlyphLayouts: true,
-      includesIdleVisibleGlyphLayer: true,
+      includesIdleVisibleGlyphLayer: false,
       includesPreciseGlyphGeometry: true,
       includesAnimateTailFrames: true,
       includesLiveNodeStyles: true,
@@ -1105,6 +1068,7 @@ function ActiveTorph({
 
   const logAnimateFinalizeSnapshot = (
     measurement: MorphMeasurement,
+    resolvedMeasurementSource: "target" | "overlay-live" | "flow-live",
     activePlan: MorphRenderPlan,
     reason: "transitionend" | "watchdog-timeout",
     barrier: MorphFinalizeBarrier,
@@ -1130,10 +1094,7 @@ function ActiveTorph({
       return;
     }
 
-    const overlayLiveDrift = measureSnapshotDrift(
-      measurement.snapshot,
-      overlayLiveSnapshot,
-    );
+    const overlayLiveDrift = measureSnapshotDrift(measurement.snapshot, overlayLiveSnapshot);
     const flowDrift = measureSnapshotDrift(measurement.snapshot, flowSnapshot);
     const rootRect = root.getBoundingClientRect();
     const flowRect = flowNode.getBoundingClientRect();
@@ -1166,6 +1127,7 @@ function ActiveTorph({
 
     logTorphDebug(debugInstanceId, "effect:animate-finalize-snapshot", {
       text,
+      resolvedMeasurementSource,
       reason,
       propertyName: event?.propertyName ?? null,
       finalizeSignal: signal,
@@ -1193,10 +1155,7 @@ function ActiveTorph({
       },
       overlayLive: summarizeDebugSnapshot(overlayLiveSnapshot),
       overlayLiveGlyphs: summarizeDebugGlyphs(overlayLiveSnapshot),
-      overlayLiveGlyphsPrecise: summarizePreciseGlyphs(
-        overlayLiveSnapshot,
-        rootRect,
-      ),
+      overlayLiveGlyphsPrecise: summarizePreciseGlyphs(overlayLiveSnapshot, rootRect),
       overlayLiveDrift: summarizeSnapshotDrift(overlayLiveDrift),
       overlayExit: summarizeDebugSnapshot(overlayExitSnapshot),
       overlayExitGlyphs: summarizeDebugGlyphs(overlayExitSnapshot),
@@ -1205,14 +1164,8 @@ function ActiveTorph({
       flowGlyphsPrecise: summarizePreciseGlyphs(flowSnapshot, rootRect),
       flowDrift: summarizeSnapshotDrift(flowDrift),
       rootOriginDrift: summarizeDebugRootOriginDrift(measurement, rootRect),
-      overlayLiveViewportAnchors: summarizeDebugViewportAnchors(
-        overlayLiveSnapshot,
-        rootRect,
-      ),
-      overlayExitViewportAnchors: summarizeDebugViewportAnchors(
-        overlayExitSnapshot,
-        rootRect,
-      ),
+      overlayLiveViewportAnchors: summarizeDebugViewportAnchors(overlayLiveSnapshot, rootRect),
+      overlayExitViewportAnchors: summarizeDebugViewportAnchors(overlayExitSnapshot, rootRect),
       flowViewportAnchors: summarizeDebugViewportAnchors(flowSnapshot, rootRect),
       rootBox: {
         width: roundDebugValue(rootRect.width),
@@ -1249,7 +1202,6 @@ function ActiveTorph({
     const measurement = state.measurement;
     const hasMoveTransitions = plan.liveItems.some((item) => item.kind === "move");
     let barrier = createMorphFinalizeBarrierModel(hasMoveTransitions);
-    let finalizeScheduled = false;
     let finalizeCommitted = false;
     let finalizeFrame: number | null = null;
     const armedAt = performance.now();
@@ -1264,6 +1216,10 @@ function ActiveTorph({
       }
 
       finalizeCommitted = true;
+      if (timelineRef.current.finalizeTimer !== null) {
+        window.clearTimeout(timelineRef.current.finalizeTimer);
+        timelineRef.current.finalizeTimer = null;
+      }
 
       const target = event?.target;
       let morphRole: string | null = null;
@@ -1275,8 +1231,45 @@ function ActiveTorph({
         morphGlyph = target.dataset.morphGlyph ?? null;
       }
 
-      logAnimateFinalizeSnapshot(measurement, plan, reason, barrierState, signal, event);
-      finalizeMorphTransition(measurement, reason);
+      const rootNode = ref.current;
+      const overlayNode = overlayRef.current;
+      const flowNode = flowTextRef.current;
+      let overlayLiveSnapshot = null;
+      if (rootNode !== null && overlayNode !== null) {
+        overlayLiveSnapshot = measureOverlayBoxSnapshot(rootNode, overlayNode, "live");
+      }
+
+      let flowSnapshot = null;
+      if (rootNode !== null && flowNode !== null) {
+        flowSnapshot = measureLiveFlowSnapshot(rootNode, flowNode);
+      }
+
+      const resolvedMeasurementSource =
+        overlayLiveSnapshot !== null
+          ? "overlay-live"
+          : flowSnapshot !== null
+            ? "flow-live"
+            : "target";
+      const resolvedMeasurement =
+        rootNode === null
+          ? measurement
+          : resolveFinalizeMeasurementModel({
+              measurement,
+              rootOrigin: readRootOrigin(rootNode),
+              visibleSnapshot: overlayLiveSnapshot,
+              fallbackSnapshot: flowSnapshot,
+            });
+
+      logAnimateFinalizeSnapshot(
+        resolvedMeasurement,
+        resolvedMeasurementSource,
+        plan,
+        reason,
+        barrierState,
+        signal,
+        event,
+      );
+      finalizeMorphTransition(resolvedMeasurement, reason);
       const config = readTorphDebugConfig();
       if (!shouldRunTorphInstrumentation(config)) {
         return;
@@ -1284,6 +1277,7 @@ function ActiveTorph({
 
       logTorphDebug(debugInstanceId, "effect:finalize-authority", {
         text,
+        resolvedMeasurementSource,
         reason,
         propertyName: event?.propertyName ?? null,
         morphRole,
@@ -1293,8 +1287,20 @@ function ActiveTorph({
         hasMoveTransitions,
         finalizeSignal: signal,
         barrier: summarizeMorphFinalizeBarrierModel(barrierState),
-        measurement: summarizeDebugMeasurement(measurement),
+        measurement: summarizeDebugMeasurement(resolvedMeasurement),
       });
+    };
+
+    const tryFinalize = (
+      reason: "transitionend" | "watchdog-timeout",
+      signal: MorphFinalizeSignal | null,
+      barrierState: MorphFinalizeBarrier,
+      event?: TransitionEvent,
+    ) => {
+      if (finalizeCommitted) {
+        return;
+      }
+      finalizeNow(reason, signal, barrierState, event);
     };
 
     const scheduleFinalize = (
@@ -1303,18 +1309,13 @@ function ActiveTorph({
       barrierState: MorphFinalizeBarrier,
       event?: TransitionEvent,
     ) => {
-      if (finalizeCommitted || finalizeScheduled) {
+      if (finalizeCommitted || finalizeFrame !== null) {
         return;
-      }
-
-      finalizeScheduled = true;
-      if (timelineRef.current.finalizeTimer !== null) {
-        window.clearTimeout(timelineRef.current.finalizeTimer);
-        timelineRef.current.finalizeTimer = null;
       }
 
       logTorphDebug(debugInstanceId, "effect:finalize-raf-schedule", {
         text,
+        debugLabel,
         reason,
         propertyName: event?.propertyName ?? null,
         finalizeSignal: signal,
@@ -1324,15 +1325,12 @@ function ActiveTorph({
 
       finalizeFrame = requestAnimationFrame(() => {
         finalizeFrame = null;
-        finalizeNow(reason, signal, barrierState, event);
+        tryFinalize(reason, signal, barrierState, event);
       });
     };
 
     const onTransitionEnd = (event: TransitionEvent) => {
-      const signal = resolveMorphFinalizeSignal(
-        event,
-        hasMoveTransitions,
-      );
+      const signal = resolveMorphFinalizeSignal(event, hasMoveTransitions);
       if (signal === null) {
         return;
       }
@@ -1429,6 +1427,10 @@ function ActiveTorph({
       debugPreviousStageRef.current = state.stage;
     }
   }, [committedMeasurement, debugInstanceId, flowText, state, text]);
+
+  useLayoutEffect(() => {
+    onStageChange?.(state.stage);
+  }, [onStageChange, state.stage]);
 
   useLayoutEffect(() => {
     const config = readTorphDebugConfig();
@@ -1552,17 +1554,11 @@ function ActiveTorph({
         rootOriginDrift: summarizeDebugRootOriginDrift(measurement, rootRect),
         overlayLive: summarizeDebugSnapshot(overlayLiveSnapshot),
         overlayLiveGlyphs: summarizeDebugGlyphs(overlayLiveSnapshot),
-        overlayLiveViewportAnchors: summarizeDebugViewportAnchors(
-          overlayLiveSnapshot,
-          rootRect,
-        ),
+        overlayLiveViewportAnchors: summarizeDebugViewportAnchors(overlayLiveSnapshot, rootRect),
         overlayLiveDrift,
         overlayExit: summarizeDebugSnapshot(overlayExitSnapshot),
         overlayExitGlyphs: summarizeDebugGlyphs(overlayExitSnapshot),
-        overlayExitViewportAnchors: summarizeDebugViewportAnchors(
-          overlayExitSnapshot,
-          rootRect,
-        ),
+        overlayExitViewportAnchors: summarizeDebugViewportAnchors(overlayExitSnapshot, rootRect),
         flow: summarizeDebugSnapshot(flowSnapshot),
         flowGlyphs: summarizeDebugGlyphs(flowSnapshot),
         flowViewportAnchors: summarizeDebugViewportAnchors(flowSnapshot, rootRect),
@@ -1830,6 +1826,8 @@ function ActiveTorph({
         layoutContext={layoutContext}
         text={renderText}
         useContentInlineSize={useContentInlineSize}
+        debugInstanceId={debugInstanceId}
+        debugLabel={debugLabel}
       />
     );
   }
@@ -1843,6 +1841,8 @@ function ActiveTorph({
         plan={visibleGlyphPlan}
         sourceSliceWhiteSpace={sourceSliceWhiteSpace}
         targetSliceWhiteSpace={targetSliceWhiteSpace}
+        debugInstanceId={debugInstanceId}
+        debugLabel={debugLabel}
       />
     );
   }
@@ -1851,14 +1851,20 @@ function ActiveTorph({
     <div
       ref={ref}
       className={className}
+      data-torph-debug-role="root"
+      data-torph-debug-instance-id={String(debugInstanceId)}
+      data-torph-debug-label={debugLabel ?? undefined}
+      data-torph-debug-stage={state.stage}
+      data-torph-debug-text={text}
       style={getRootStyleModel(state.stage, plan, state.measurement, layoutContext)}
     >
-      <span style={SCREEN_READER_ONLY_STYLE}>{text}</span>
+      <span style={getScreenReaderOnlyStyle()}>{text}</span>
       <FlowTextLayer
         flowText={flowText}
         flowTextRef={flowTextRef}
-        layoutId={layoutId}
         shouldHideFlowText={shouldHideFlowText}
+        debugInstanceId={debugInstanceId}
+        debugLabel={debugLabel}
       />
       {measurementLayer}
       {overlay}
@@ -1869,13 +1875,25 @@ function ActiveTorph({
 export type TorphProps = {
   text: string;
   className?: string;
-  layoutId?: string | null;
+  debugLabel?: string | null;
+  debugMeta?: Record<string, unknown> | null;
+  onStageChange?: (stage: MorphStage) => void;
 };
 
 export function Torph({
   text,
   className,
-  layoutId = null,
+  debugLabel = null,
+  debugMeta = null,
+  onStageChange,
 }: TorphProps) {
-  return <ActiveTorph text={text} className={className} layoutId={layoutId} />;
+  return (
+    <ActiveTorph
+      text={text}
+      className={className}
+      debugLabel={debugLabel}
+      debugMeta={debugMeta}
+      onStageChange={onStageChange}
+    />
+  );
 }

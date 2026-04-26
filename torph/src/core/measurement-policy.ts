@@ -105,8 +105,23 @@ export function shouldMeasureUsingContentInlineSize(
   );
 }
 
-export function shouldForceDomMeasurementBackend(layoutContext: LayoutContext) {
-  return layoutContext.measurementStability !== "stable";
+export function shouldForceDomMeasurementBackend(args: {
+  layoutContext: LayoutContext;
+  useContentInlineSize: boolean;
+}) {
+  if (args.layoutContext.measurementCause === "font-metrics") {
+    return true;
+  }
+
+  if (args.layoutContext.measurementStability === "stable") {
+    return false;
+  }
+
+  if (args.layoutContext.measurementCause !== "root-motion") {
+    return true;
+  }
+
+  return !args.useContentInlineSize;
 }
 
 export function getTrustedPretextMeasurementBackend(
@@ -147,7 +162,7 @@ export function getPreferredMorphMeasurementBackend(
   layoutContext: LayoutContext,
   useContentInlineSize: boolean,
 ): PretextMorphMeasurementBackend {
-  if (shouldForceDomMeasurementBackend(layoutContext)) {
+  if (shouldForceDomMeasurementBackend({ layoutContext, useContentInlineSize })) {
     return "dom";
   }
 

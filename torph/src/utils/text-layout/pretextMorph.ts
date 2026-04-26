@@ -1,20 +1,11 @@
 import {
   clearCache as clearPretextLayoutCaches,
+  normalizePretextWhiteSpace,
   prepareWithSegments,
+  readPreparedSegmentGraphemeAdvances,
   walkLineRanges,
   type PreparedTextWithSegments,
 } from "./pretext.js";
-import {
-  normalizeWhitespaceNormal,
-  normalizeWhitespacePreWrap,
-} from "../../vendor/pretext/analysis.js";
-import {
-  getEngineProfile,
-  getFontMeasurementState,
-  getSegmentGraphemePrefixWidths,
-  getSegmentMetrics,
-  textMayContainEmoji,
-} from "../../vendor/pretext/measurement.js";
 
 const UNBOUNDED_LAYOUT_WIDTH = Number.MAX_SAFE_INTEGER / 4;
 const PREPARED_TEXT_CACHE_LIMIT = 256;
@@ -58,34 +49,22 @@ export type PretextMorphSnapshot = {
 };
 
 const preparedTextCache = new Map<string, PreparedTextWithSegments>();
-const preparedSegmentGraphemeCache = new WeakMap<PreparedTextWithSegments, Map<number, string[]>>();
-let sharedGraphemeSegmenter: Intl.Segmenter | null = null;
-
-function getSharedGraphemeSegmenter() {
-  if (sharedGraphemeSegmenter !== null) {
-    return sharedGraphemeSegmenter;
-  }
-
-  sharedGraphemeSegmenter = new Intl.Segmenter(undefined, {
-    granularity: "grapheme",
-  });
-  return sharedGraphemeSegmenter;
-}
 
 function readPretextWhiteSpace(whiteSpace: PretextMorphWhiteSpace): "normal" | "pre-wrap" {
   return whiteSpace === "pre-wrap" ? "pre-wrap" : "normal";
 }
 
-function getPreparedTextCacheKey(renderText: string, layoutContext: PretextMorphLayoutContext) {
-  return `${layoutContext.font}\u0000${layoutContext.whiteSpace}\u0000${renderText}`;
+function getPreparedTextCacheKey(text: string, layoutContext: PretextMorphLayoutContext) {
+  return [
+    layoutContext.font,
+    layoutContext.whiteSpace,
+    layoutContext.letterSpacingPx.toFixed(4),
+    text,
+  ].join("\u0000");
 }
 
-function getPreparedText(
-  text: string,
-  renderText: string,
-  layoutContext: PretextMorphLayoutContext,
-) {
-  const cacheKey = getPreparedTextCacheKey(renderText, layoutContext);
+function getPreparedText(text: string, layoutContext: PretextMorphLayoutContext) {
+  const cacheKey = getPreparedTextCacheKey(text, layoutContext);
   const cached = preparedTextCache.get(cacheKey);
   if (cached !== undefined) {
     preparedTextCache.delete(cacheKey);
@@ -95,6 +74,7 @@ function getPreparedText(
 
   const prepared = prepareWithSegments(text, layoutContext.font, {
     whiteSpace: readPretextWhiteSpace(layoutContext.whiteSpace),
+    letterSpacing: layoutContext.letterSpacingPx,
   });
   preparedTextCache.set(cacheKey, prepared);
 
@@ -110,92 +90,7 @@ function getPreparedText(
 
 export function clearPretextMorphCaches() {
   preparedTextCache.clear();
-  sharedGraphemeSegmenter = null;
   clearPretextLayoutCaches();
-}
-
-function getPreparedSegmentGraphemeTexts(prepared: PreparedTextWithSegments, segmentIndex: number) {
-  let cache = preparedSegmentGraphemeCache.get(prepared);
-  if (cache === undefined) {
-    cache = new Map<number, string[]>();
-    preparedSegmentGraphemeCache.set(prepared, cache);
-  }
-
-  const cached = cache.get(segmentIndex);
-  if (cached !== undefined) {
-    return cached;
-  }
-
-  const graphemes: string[] = [];
-  for (const segment of getSharedGraphemeSegmenter().segment(prepared.segments[segmentIndex]!)) {
-    graphemes.push(segment.segment);
-  }
-
-  cache.set(segmentIndex, graphemes);
-  return graphemes;
-}
-
-function deriveAdvancesFromPrefixWidths(prefixWidths: readonly number[]) {
-  const advances: number[] = [];
-
-  for (let index = 0; index < prefixWidths.length; index += 1) {
-    const previous = index === 0 ? 0 : prefixWidths[index - 1]!;
-    advances.push(prefixWidths[index]! - previous);
-  }
-
-  return advances;
-}
-
-function getSegmentGraphemeAdvances(
-  prepared: PreparedTextWithSegments,
-  segmentIndex: number,
-  layoutContext: PretextMorphLayoutContext,
-) {
-  const segmentText = prepared.segments[segmentIndex]!;
-  const graphemes = getPreparedSegmentGraphemeTexts(prepared, segmentIndex);
-
-  if (graphemes.length <= 1) {
-    return {
-      graphemes,
-      advances: [prepared.widths[segmentIndex]!],
-    };
-  }
-
-  const cachedPrefixWidths = prepared.breakablePrefixWidths[segmentIndex];
-  if (cachedPrefixWidths !== null) {
-    return {
-      graphemes,
-      advances: deriveAdvancesFromPrefixWidths(cachedPrefixWidths),
-    };
-  }
-
-  const cachedWidths = prepared.breakableWidths[segmentIndex];
-  if (cachedWidths !== null) {
-    return {
-      graphemes,
-      advances: cachedWidths,
-    };
-  }
-
-  const { cache, emojiCorrection } = getFontMeasurementState(
-    layoutContext.font,
-    textMayContainEmoji(segmentText),
-  );
-  const segmentMetrics = getSegmentMetrics(segmentText, cache);
-  const prefixWidths = getSegmentGraphemePrefixWidths(
-    segmentText,
-    segmentMetrics,
-    cache,
-    emojiCorrection,
-  );
-
-  return {
-    graphemes,
-    advances:
-      prefixWidths === null
-        ? [prepared.widths[segmentIndex]!]
-        : deriveAdvancesFromPrefixWidths(prefixWidths),
-  };
 }
 
 function getPretextMaxWidth(layoutContext: PretextMorphLayoutContext) {
@@ -229,10 +124,6 @@ function hasUnsupportedPretextMorphFeatures(
   }
 
   if (layoutContext.textTransform !== "none") {
-    return true;
-  }
-
-  if (Math.abs(layoutContext.letterSpacingPx) > 0.01) {
     return true;
   }
 
@@ -274,9 +165,7 @@ export function getPretextMorphRenderedText(
     return text;
   }
 
-  return layoutContext.whiteSpace === "pre-wrap"
-    ? normalizeWhitespacePreWrap(text)
-    : normalizeWhitespaceNormal(text);
+  return normalizePretextWhiteSpace(text, readPretextWhiteSpace(layoutContext.whiteSpace));
 }
 
 export function getPretextMorphStyleSignature(layoutContext: PretextMorphLayoutContext | null) {
@@ -284,7 +173,6 @@ export function getPretextMorphStyleSignature(layoutContext: PretextMorphLayoutC
     return null;
   }
 
-  const engineProfile = getEngineProfile();
   return [
     layoutContext.font,
     layoutContext.whiteSpace,
@@ -294,10 +182,6 @@ export function getPretextMorphStyleSignature(layoutContext: PretextMorphLayoutC
     layoutContext.wordSpacingPx.toFixed(4),
     normalizeFeatureSetting(layoutContext.fontFeatureSettings),
     normalizeFeatureSetting(layoutContext.fontVariationSettings),
-    String(engineProfile.lineFitEpsilon),
-    engineProfile.carryCJKAfterClosingQuote ? "1" : "0",
-    engineProfile.preferPrefixWidthsForBreakableRuns ? "1" : "0",
-    engineProfile.preferEarlySoftHyphenBreak ? "1" : "0",
   ].join("\u0000");
 }
 
@@ -417,7 +301,7 @@ export function measureMorphSnapshotWithPretext(
     };
   }
 
-  const prepared = getPreparedText(text, renderText, layoutContext);
+  const prepared = getPreparedText(text, layoutContext);
   const graphemes: PretextMorphCharacterLayout[] = [];
   let width = 0;
   let ordinal = 0;
@@ -434,10 +318,13 @@ export function measureMorphSnapshotWithPretext(
     ) {
       const startGraphemeIndex =
         segmentIndex === line.start.segmentIndex ? line.start.graphemeIndex : 0;
-      const { advances, graphemes: segmentGraphemes } = getSegmentGraphemeAdvances(
+      const { advances, graphemes: segmentGraphemes } = readPreparedSegmentGraphemeAdvances(
         prepared,
         segmentIndex,
-        layoutContext,
+        {
+          font: layoutContext.font,
+          letterSpacingPx: layoutContext.letterSpacingPx,
+        },
       );
       const next = pushSegmentGraphemeRange({
         advances,
@@ -457,10 +344,13 @@ export function measureMorphSnapshotWithPretext(
     if (line.end.graphemeIndex > 0) {
       const startGraphemeIndex =
         line.start.segmentIndex === line.end.segmentIndex ? line.start.graphemeIndex : 0;
-      const { advances, graphemes: segmentGraphemes } = getSegmentGraphemeAdvances(
+      const { advances, graphemes: segmentGraphemes } = readPreparedSegmentGraphemeAdvances(
         prepared,
         line.end.segmentIndex,
-        layoutContext,
+        {
+          font: layoutContext.font,
+          letterSpacingPx: layoutContext.letterSpacingPx,
+        },
       );
       const next = pushSegmentGraphemeRange({
         advances,

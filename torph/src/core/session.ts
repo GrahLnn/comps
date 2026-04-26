@@ -8,6 +8,7 @@ import {
   type MorphMeasurement,
   type MorphRenderPlan,
   type MorphSession,
+  type MorphSnapshot,
   type MorphState,
   type MorphTimeline,
   type MorphVisualBridge,
@@ -45,6 +46,12 @@ export type MorphSessionDecision =
       source: MorphMeasurement;
       target: MorphMeasurement;
     };
+
+export type MorphSessionUpdateResult = {
+  nextMeasurement: MorphMeasurement;
+  appliedMeasurement: MorphMeasurement;
+  decision: MorphSessionDecision;
+};
 
 function bucketByGlyph(graphemes: MorphCharacterLayout[]) {
   const buckets = new Map<string, MorphCharacterLayout[]>();
@@ -285,7 +292,7 @@ export function decideMorphSessionUpdate({
     if (nextMeasurement.snapshot.renderText === target.snapshot.renderText) {
       return {
         kind: "freeze-animating-target",
-        target,
+        target: nextMeasurement,
       };
     }
   }
@@ -310,26 +317,6 @@ export function decideMorphSessionUpdate({
     kind: "start-morph",
     source,
     target: nextMeasurement,
-  };
-}
-
-function pinMeasurementToCurrentOrigin(
-  measurement: MorphMeasurement,
-  origin: { left: number; top: number },
-) {
-  if (
-    nearlyEqual(measurement.rootOrigin.left, origin.left, MORPH.geometryEpsilon) &&
-    nearlyEqual(measurement.rootOrigin.top, origin.top, MORPH.geometryEpsilon)
-  ) {
-    return measurement;
-  }
-
-  return {
-    snapshot: measurement.snapshot,
-    layoutInlineSize: measurement.layoutInlineSize,
-    reservedInlineSize: measurement.reservedInlineSize,
-    flowInlineSize: measurement.flowInlineSize,
-    rootOrigin: origin,
   };
 }
 
@@ -417,6 +404,11 @@ export function applyMorphSessionDecision({
   setState: Dispatch<SetStateAction<MorphState>>;
 }) {
   if (decision.kind === "freeze-animating-target") {
+    if (session.target === decision.target) {
+      return decision.target;
+    }
+
+    session.target = decision.target;
     return decision.target;
   }
 
@@ -449,7 +441,7 @@ export function reconcileMorphSessionUpdate({
   nextMeasurement: MorphMeasurement;
   fontsReady: boolean;
   setState: Dispatch<SetStateAction<MorphState>>;
-}) {
+}): MorphSessionUpdateResult {
   const decision = decideMorphSessionUpdate({
     committed: session.committed,
     target: session.target,
@@ -458,12 +450,18 @@ export function reconcileMorphSessionUpdate({
     fontsReady,
   });
 
-  return applyMorphSessionDecision({
+  const appliedMeasurement = applyMorphSessionDecision({
     decision,
     session,
     timeline,
     setState,
   });
+
+  return {
+    nextMeasurement,
+    appliedMeasurement,
+    decision,
+  };
 }
 
 export function finalizeMorphTransition({
@@ -481,34 +479,40 @@ export function finalizeMorphTransition({
   commitStaticMeasurement(session, session.target ?? measurement, setState);
 }
 
-export function resolvePreparedMeasurementOrigin(
-  measurement: MorphMeasurement,
-  origin: { left: number; top: number },
-) {
-  return pinMeasurementToCurrentOrigin(measurement, origin);
-}
+export function resolveFinalizeMeasurement({
+  measurement,
+  rootOrigin,
+  visibleSnapshot,
+  fallbackSnapshot,
+}: {
+  measurement: MorphMeasurement;
+  rootOrigin: { left: number; top: number };
+  visibleSnapshot: MorphSnapshot | null;
+  fallbackSnapshot: MorphSnapshot | null;
+}) {
+  const nextSnapshot = visibleSnapshot ?? fallbackSnapshot ?? measurement.snapshot;
+  const hasSameSnapshot = sameSnapshot(measurement.snapshot, nextSnapshot);
+  const hasSameOrigin =
+    nearlyEqual(measurement.rootOrigin.left, rootOrigin.left, MORPH.geometryEpsilon) &&
+    nearlyEqual(measurement.rootOrigin.top, rootOrigin.top, MORPH.geometryEpsilon);
 
-export function resolvePreparedPlanVisualBridge(
-  plan: MorphRenderPlan,
-  origin: { left: number; top: number },
-) {
-  const offsetX = plan.sourceRootOrigin.left - origin.left;
-  const offsetY = plan.sourceRootOrigin.top - origin.top;
-  if (
-    nearlyEqual(plan.visualBridge.offsetX, offsetX, MORPH.geometryEpsilon) &&
-    nearlyEqual(plan.visualBridge.offsetY, offsetY, MORPH.geometryEpsilon)
-  ) {
-    return plan;
+  if (hasSameSnapshot && hasSameOrigin) {
+    return measurement;
   }
 
   return {
-    ...plan,
-    visualBridge: {
-      offsetX,
-      offsetY,
-    },
+    snapshot: nextSnapshot,
+    layoutInlineSize: measurement.layoutInlineSize,
+    reservedInlineSize: measurement.reservedInlineSize,
+    flowInlineSize: measurement.flowInlineSize,
+    rootOrigin,
   };
 }
+export {
+  resolvePreparedMeasurementOrigin,
+  resolvePreparedMorphState,
+  resolvePreparedPlanVisualBridge,
+} from "./reference-frame";
 
 export function startMorph({
   source,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { getFallbackTextStyle } from "../torph/src/components/Torph";
+import { getFallbackTextStyle } from "../torph/src/components/Torph.layers";
 
 describe("getFallbackTextStyle", () => {
   test("keeps the fallback flow on a single line before measurement is ready", () => {

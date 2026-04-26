@@ -13,9 +13,11 @@ export type TorphDebugConfig =
     };
 
 type TorphTraceEntry = {
+  source: "torph";
   instanceId: number;
   event: string;
   payload: Record<string, unknown>;
+  performanceNow: number;
   seq: number;
   time: string;
 };
@@ -61,7 +63,7 @@ export type SnapshotDrift = {
 
 const TORPH_TRACE_MAX_BYTES = 4 * 1024 * 1024;
 const TORPH_TRACE_MAX_LINES = 4000;
-export const TORPH_TRACE_SCHEMA_VERSION = 7;
+export const TORPH_TRACE_SCHEMA_VERSION = 10;
 const DEFAULT_TORPH_DEBUG_CONFIG = {
   capture: false,
   console: false,
@@ -196,9 +198,11 @@ function appendTorphTrace(
   ensureTorphTraceApi();
   const store = getTorphTraceStore();
   const entry: TorphTraceEntry = {
+    source: "torph",
     instanceId,
     event,
     payload,
+    performanceNow: performance.now(),
     seq: store.nextSeq,
     time: new Date().toISOString(),
   };
@@ -275,6 +279,32 @@ export function summarizeDebugMeasurement(measurement: MorphMeasurement | null) 
   };
 }
 
+export function summarizeDebugMeasurementAnchors(measurement: MorphMeasurement | null) {
+  if (measurement === null) {
+    return null;
+  }
+
+  const anchors = [];
+  const anchorIndices = collectDebugAnchorIndices(measurement.snapshot.graphemes.length);
+  for (const index of anchorIndices) {
+    const grapheme = measurement.snapshot.graphemes[index];
+    if (grapheme === undefined) {
+      continue;
+    }
+
+    anchors.push({
+      index,
+      glyph: grapheme.glyph,
+      left: roundDebugValue(measurement.rootOrigin.left + grapheme.left),
+      top: roundDebugValue(measurement.rootOrigin.top + grapheme.top),
+      width: roundDebugValue(grapheme.width),
+      height: roundDebugValue(grapheme.height),
+    });
+  }
+
+  return anchors;
+}
+
 export function summarizeDebugLayoutContext(layoutContext: LayoutContext | null) {
   if (layoutContext === null) {
     return null;
@@ -285,6 +315,7 @@ export function summarizeDebugLayoutContext(layoutContext: LayoutContext | null)
     parentDisplay: layoutContext.parentDisplay,
     whiteSpace: layoutContext.whiteSpace,
     width: roundDebugValue(layoutContext.width),
+    measurementCause: layoutContext.measurementCause,
     measurementStability: layoutContext.measurementStability,
     measurementVersion: layoutContext.measurementVersion,
   };

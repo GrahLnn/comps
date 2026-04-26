@@ -1,144 +1,238 @@
 import { describe, expect, test } from "bun:test";
 import {
   doesTransitionTargetAffectNode,
-  isFontMetricTransitionProperty,
-  notifyMorphMeasurementInvalidationSubscribers,
-  readFont,
-  subscribeMorphMeasurementInvalidation,
+  hasRootRectChangedWithEpsilon,
+  isGeometryTransitionProperty,
+  resolveNextLayoutContext,
+  shouldRefreshLayoutContextForRootMotion,
 } from "../torph/src/core/layout-observer";
+import type { LayoutContext } from "../torph/src/core/types";
 
-describe("readFont", () => {
-  test("prefers the browser font shorthand when it is available", () => {
-    const styles = {
-      font: "600 24px / 32px Test Sans",
-      fontStyle: "normal",
-      fontVariant: "normal",
-      fontWeight: "600",
-      fontSize: "24px",
-      lineHeight: "32px",
-      fontFamily: "\"Ignored\"",
-    } as CSSStyleDeclaration;
-
-    expect(readFont(styles)).toBe("600 24px / 32px Test Sans");
-  });
-
-  test("reconstructs a shorthand when the browser leaves styles.font empty", () => {
-    const styles = {
-      font: "",
-      fontStyle: "italic",
-      fontVariant: "small-caps",
-      fontWeight: "700",
-      fontSize: "20px",
-      lineHeight: "28px",
-      fontFamily: "\"Noto Sans\"",
-    } as CSSStyleDeclaration;
-
-    expect(readFont(styles)).toBe(
-      'italic small-caps 700 20px / 28px "Noto Sans"',
-    );
-  });
-});
-
-describe("morph measurement invalidation subscribers", () => {
-  test("notifies every active subscriber", () => {
-    const calls: string[] = [];
-    const unsubscribeA = subscribeMorphMeasurementInvalidation(() => {
-      calls.push("a");
-    });
-    const unsubscribeB = subscribeMorphMeasurementInvalidation(() => {
-      calls.push("b");
-    });
-
-    try {
-      notifyMorphMeasurementInvalidationSubscribers();
-    } finally {
-      unsubscribeA();
-      unsubscribeB();
-    }
-
-    expect(calls).toEqual(["a", "b"]);
-  });
-
-  test("stops notifying subscribers after unsubscribe", () => {
-    const calls: string[] = [];
-    const unsubscribe = subscribeMorphMeasurementInvalidation(() => {
-      calls.push("live");
-    });
-
-    unsubscribe();
-    notifyMorphMeasurementInvalidationSubscribers();
-
-    expect(calls).toEqual([]);
-  });
-});
-
-describe("font metric transition helpers", () => {
-  type FakeNode = {
-    parent: FakeNode | null;
-    contains: (node: unknown) => boolean;
+function createLayoutContext(
+  overrides: Partial<LayoutContext> = {},
+): LayoutContext {
+  return {
+    display: "inline-grid",
+    direction: "ltr",
+    font: "400 16px / 24px Test",
+    fontFeatureSettings: "normal",
+    fontVariationSettings: "\"wght\" 520",
+    letterSpacingPx: -0.32,
+    lineHeightPx: 24,
+    measurementCause: "steady",
+    measurementStability: "live",
+    parentDisplay: "block",
+    textTransform: "none",
+    whiteSpace: "nowrap",
+    width: 155.5,
+    wordSpacingPx: 0,
+    measurementVersion: 7,
+    ...overrides,
   };
+}
 
-  function readFakeNode(node: unknown): FakeNode | null {
-    if (typeof node !== "object" || node === null) {
-      return null;
-    }
+describe("isGeometryTransitionProperty", () => {
+  test("tracks transform-driven motion props that can move a live Torph root", () => {
+    expect(isGeometryTransitionProperty("transform")).toBe(true);
+    expect(isGeometryTransitionProperty("translate")).toBe(true);
+    expect(isGeometryTransitionProperty("inset-inline-start")).toBe(true);
+  });
 
-    if (!("parent" in node) || !("contains" in node)) {
-      return null;
-    }
+  test("ignores typography-only transitions that belong to the font metric path", () => {
+    expect(isGeometryTransitionProperty("font-size")).toBe(false);
+    expect(isGeometryTransitionProperty("letter-spacing")).toBe(false);
+    expect(isGeometryTransitionProperty("opacity")).toBe(false);
+  });
+});
 
-    return node as FakeNode;
-  }
+describe("doesTransitionTargetAffectNode", () => {
+  test("treats ancestor transitions as affecting descendant Torph nodes", () => {
+    const child = {} as Node;
+    const parent = {
+      contains(candidate: Node) {
+        return candidate === child;
+      },
+    };
 
-  function createNode(parent: FakeNode | null) {
-    return {
-      parent,
-      contains(node: unknown) {
-        let current = readFakeNode(node);
+    expect(doesTransitionTargetAffectNode(child, parent)).toBe(true);
+  });
 
-        while (current !== null) {
-          if (current === this) {
-            return true;
-          }
-
-          current = current.parent;
-        }
-
+  test("ignores unrelated transition targets", () => {
+    const node = {} as Node;
+    const unrelated = {
+      contains() {
         return false;
       },
-    } satisfies FakeNode;
-  }
+    };
 
-  test("treats inherited font metric transitions as relevant", () => {
-    expect(isFontMetricTransitionProperty("font-weight")).toBe(true);
-    expect(isFontMetricTransitionProperty("font-variation-settings")).toBe(true);
-    expect(isFontMetricTransitionProperty("letter-spacing")).toBe(true);
+    expect(doesTransitionTargetAffectNode(node, unrelated)).toBe(false);
   });
+});
 
-  test("ignores unrelated transition properties", () => {
-    expect(isFontMetricTransitionProperty("opacity")).toBe(false);
-    expect(isFontMetricTransitionProperty("transform")).toBe(false);
-    expect(isFontMetricTransitionProperty("width")).toBe(false);
-  });
+describe("hasRootRectChangedWithEpsilon", () => {
+  test("keeps subpixel settling detectable with a tighter epsilon", () => {
+    const previousRect = {
+      left: 100,
+      top: 40,
+      width: 160,
+      height: 40,
+    } satisfies Pick<DOMRectReadOnly, "left" | "top" | "width" | "height">;
+    const nextRect = {
+      left: 100,
+      top: 40,
+      width: 159.72,
+      height: 40,
+    } satisfies Pick<DOMRectReadOnly, "left" | "top" | "width" | "height">;
 
-  test("matches the observed node and its ancestors only", () => {
-    const root = createNode(null);
-    const child = createNode(root);
-    const sibling = createNode(root);
-    const descendant = createNode(child);
-
     expect(
-      doesTransitionTargetAffectNode(descendant as unknown as Node, descendant as unknown as EventTarget),
-    ).toBe(true);
-    expect(
-      doesTransitionTargetAffectNode(descendant as unknown as Node, child as unknown as EventTarget),
-    ).toBe(true);
-    expect(
-      doesTransitionTargetAffectNode(descendant as unknown as Node, root as unknown as EventTarget),
-    ).toBe(true);
-    expect(
-      doesTransitionTargetAffectNode(child as unknown as Node, sibling as unknown as EventTarget),
+      hasRootRectChangedWithEpsilon(previousRect, nextRect, 0.5),
     ).toBe(false);
-    expect(doesTransitionTargetAffectNode(child as unknown as Node, null)).toBe(false);
+    expect(
+      hasRootRectChangedWithEpsilon(previousRect, nextRect, 0.05),
+    ).toBe(true);
+  });
+});
+
+describe("shouldRefreshLayoutContextForRootMotion", () => {
+  test("refreshes layout context when root motion first becomes authoritative", () => {
+    expect(
+      shouldRefreshLayoutContextForRootMotion({
+        measurementCause: "steady",
+        measurementStability: "stable",
+        previousRect: {
+          left: 100,
+          top: 40,
+          width: 160,
+          height: 40,
+        },
+        nextRect: {
+          left: 101,
+          top: 40,
+          width: 160,
+          height: 40,
+        },
+      }),
+    ).toBe(true);
+  });
+
+  test("skips layout-context refresh for pure translation once root motion is already active", () => {
+    expect(
+      shouldRefreshLayoutContextForRootMotion({
+        measurementCause: "root-motion",
+        measurementStability: "live",
+        previousRect: {
+          left: 100,
+          top: 40,
+          width: 160,
+          height: 40,
+        },
+        nextRect: {
+          left: 112,
+          top: 44,
+          width: 160,
+          height: 40,
+        },
+      }),
+    ).toBe(false);
+  });
+
+  test("refreshes layout context when root motion also changes box size", () => {
+    expect(
+      shouldRefreshLayoutContextForRootMotion({
+        measurementCause: "root-motion",
+        measurementStability: "live",
+        previousRect: {
+          left: 100,
+          top: 40,
+          width: 160,
+          height: 40,
+        },
+        nextRect: {
+          left: 112,
+          top: 44,
+          width: 159.2,
+          height: 40,
+        },
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("resolveNextLayoutContext", () => {
+  test("reuses the previous layout context during motion polling when metrics are unchanged", () => {
+    const previous = createLayoutContext();
+    const next = createLayoutContext({
+      measurementVersion: 0,
+    });
+
+    expect(
+      resolveNextLayoutContext({
+        previous,
+        next,
+        refreshMode: "motion",
+      }),
+    ).toBe(previous);
+  });
+
+  test("forces a new measurement version for invalidation even when metrics are unchanged", () => {
+    const previous = createLayoutContext();
+    const next = createLayoutContext({
+      measurementVersion: 0,
+    });
+
+    expect(
+      resolveNextLayoutContext({
+        previous,
+        next,
+        refreshMode: "invalidate",
+      }),
+    ).toEqual({
+      ...next,
+      measurementVersion: 8,
+    });
+  });
+
+  test("advances the measurement version when the instability cause changes", () => {
+    const previous = createLayoutContext({
+      measurementCause: "root-motion",
+    });
+
+    expect(
+      resolveNextLayoutContext({
+        previous,
+        next: createLayoutContext({
+          measurementCause: "font-metrics",
+          measurementVersion: 0,
+        }),
+        refreshMode: "motion",
+      }),
+    ).toEqual({
+      ...createLayoutContext({
+        measurementCause: "font-metrics",
+        measurementVersion: 0,
+      }),
+      measurementVersion: 8,
+    });
+  });
+
+  test("advances the measurement version when live metrics actually change", () => {
+    const previous = createLayoutContext();
+
+    expect(
+      resolveNextLayoutContext({
+        previous,
+        next: createLayoutContext({
+          width: 157.875,
+          measurementVersion: 0,
+        }),
+        refreshMode: "motion",
+      }),
+    ).toEqual({
+      ...createLayoutContext({
+        width: 157.875,
+        measurementVersion: 0,
+      }),
+      measurementVersion: 8,
+    });
   });
 });

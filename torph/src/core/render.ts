@@ -2,14 +2,12 @@ import type { CSSProperties } from "react";
 import {
   MORPH,
   type LayoutContext,
-  type MorphCharacterLayout,
   type MorphLiveItem,
   type MorphMeasurement,
   type MorphRenderPlan,
   type MorphSnapshot,
   type MorphStage,
   type MorphVisualBridge,
-  ZERO_BRIDGE,
 } from "./types";
 
 const OVERLAY_STYLE = {
@@ -33,10 +31,7 @@ export function getFadeDuration(fraction: number) {
   return Math.min(MORPH.durationMs * fraction, MORPH.maxFadeMs);
 }
 
-export function getOverlayStyle(
-  stage: MorphStage,
-  plan: MorphRenderPlan,
-): CSSProperties {
+export function getOverlayStyle(stage: MorphStage, plan: MorphRenderPlan): CSSProperties {
   if (stage === "idle") {
     return OVERLAY_STYLE;
   }
@@ -63,6 +58,10 @@ export function getLiveTransform(
     return `translate(${(item.fromLeft ?? item.left) - item.left + visualBridge.offsetX}px, ${(item.fromTop ?? item.top) - item.top + visualBridge.offsetY}px)`;
   }
 
+  return "translate(0px, 0px)";
+}
+
+export function getExitTransform(visualBridge: MorphVisualBridge) {
   return `translate(${visualBridge.offsetX}px, ${visualBridge.offsetY}px)`;
 }
 
@@ -94,16 +93,12 @@ function getExitOpacity(stage: MorphStage) {
   return 1;
 }
 
-export function getExitTransform(visualBridge: MorphVisualBridge) {
-  return `translate(${visualBridge.offsetX}px, ${visualBridge.offsetY}px)`;
-}
-
 export function getExitTransition(stage: MorphStage) {
   if (stage !== "animate") {
     return undefined;
   }
 
-  return `transform ${MORPH.durationMs}ms ${MORPH.ease}, opacity ${getFadeDuration(0.25)}ms linear`;
+  return `opacity ${getFadeDuration(0.25)}ms linear`;
 }
 
 export function supportsIntrinsicWidthLock(display: string, parentDisplay: string) {
@@ -129,9 +124,7 @@ export function supportsIntrinsicWidthLock(display: string, parentDisplay: strin
   return parentNeedsReservation;
 }
 
-export function getRootDisplay(
-  layoutContext: LayoutContext | null,
-): "grid" | "inline-grid" {
+export function getRootDisplay(layoutContext: LayoutContext | null): "grid" | "inline-grid" {
   if (layoutContext === null) {
     return "grid";
   }
@@ -185,9 +178,7 @@ export function getMeasurementLayerStyle(
   if (layoutContext !== null) {
     if (useContentInlineSize) {
       intrinsicWidthLock = true;
-    } else if (
-      supportsIntrinsicWidthLock(layoutContext.display, layoutContext.parentDisplay)
-    ) {
+    } else if (supportsIntrinsicWidthLock(layoutContext.display, layoutContext.parentDisplay)) {
       intrinsicWidthLock = true;
     }
   }
@@ -214,49 +205,19 @@ export function resolveFlowText(
 export function shouldRenderGlyphLayer(
   stage: MorphStage,
   plan: MorphRenderPlan | null,
-  measurement: MorphMeasurement | null,
+  _measurement: MorphMeasurement | null,
 ) {
   if (stage === "idle") {
-    return measurement !== null;
+    return false;
   }
 
   return plan !== null;
 }
 
-export function resolveGlyphSliceWhiteSpace(
-  snapshot: MorphSnapshot | null,
-): "inherit" | "nowrap" {
+export function resolveGlyphSliceWhiteSpace(snapshot: MorphSnapshot | null): "inherit" | "nowrap" {
   if (snapshot === null) {
     return "inherit";
   }
 
   return "nowrap";
-}
-
-function toSteadyLiveItem(grapheme: MorphCharacterLayout): MorphLiveItem {
-  return {
-    ...grapheme,
-    kind: "move",
-    fromLeft: grapheme.left,
-    fromTop: grapheme.top,
-  };
-}
-
-export function createSteadyGlyphPlan(
-  measurement: MorphMeasurement,
-): MorphRenderPlan {
-  const snapshot = measurement.snapshot;
-
-  return {
-    frameWidth: snapshot.width,
-    frameHeight: snapshot.height,
-    layoutInlineSizeFrom: measurement.layoutInlineSize,
-    layoutInlineSizeTo: measurement.layoutInlineSize,
-    sourceRenderText: snapshot.renderText,
-    targetRenderText: snapshot.renderText,
-    sourceRootOrigin: measurement.rootOrigin,
-    visualBridge: ZERO_BRIDGE,
-    liveItems: snapshot.graphemes.map(toSteadyLiveItem),
-    exitItems: [],
-  };
 }

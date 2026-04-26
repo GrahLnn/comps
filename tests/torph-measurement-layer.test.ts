@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { needsMeasurementLayer } from "../torph/src/core/measurement-policy";
-import { FlowTextLayer } from "../torph/src/components/Torph";
+import { FlowTextLayer } from "../torph/src/components/Torph.layers";
 
 describe("needsMeasurementLayer", () => {
   test("requests the in-tree measurement layer for cold probe runs", () => {
@@ -17,28 +17,27 @@ describe("needsMeasurementLayer", () => {
 });
 
 describe("FlowTextLayer", () => {
-  test("keeps layoutId unset by default", () => {
+  test("renders the stable flow text with a plain span", () => {
     const element = FlowTextLayer({
       flowText: "alpha beta",
       flowTextRef: { current: null },
-      layoutId: null,
       shouldHideFlowText: false,
+      debugInstanceId: 1,
     });
 
-    expect(element.props.children.props.layoutId).toBeUndefined();
+    expect(element.props.children.type).toBe("span");
     expect(element.props.children.props.children).toBe("alpha beta");
   });
 
-  test("passes layoutId to the stable flow text node", () => {
+  test("still hides the fallback flow text shell while preserving content", () => {
     const element = FlowTextLayer({
       flowText: "alpha beta",
       flowTextRef: { current: null },
-      layoutId: "shared-text",
       shouldHideFlowText: true,
+      debugInstanceId: 1,
     });
 
     expect(element.props.style.visibility).toBe("hidden");
-    expect(element.props.children.props.layoutId).toBe("shared-text");
     expect(element.props.children.props.children).toBe("alpha beta");
   });
 });

@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  createSteadyGlyphPlan,
   getOverlayStyle,
   getRootStyle,
   resolveGlyphSliceWhiteSpace,
@@ -136,8 +135,8 @@ describe("getRootStyle", () => {
     expect(style.transition).toBeUndefined();
   });
 
-  test("uses the glyph layer as the only visible text path once measurement exists", () => {
-    expect(shouldRenderGlyphLayer("idle", null, measurement)).toBe(true);
+  test("uses the glyph layer only while morphing", () => {
+    expect(shouldRenderGlyphLayer("idle", null, measurement)).toBe(false);
     expect(shouldRenderGlyphLayer("prepare", plan, measurement)).toBe(true);
     expect(shouldRenderGlyphLayer("prepare", null, measurement)).toBe(false);
     expect(shouldRenderGlyphLayer("idle", null, null)).toBe(false);
@@ -158,33 +157,6 @@ describe("getRootStyle", () => {
     expect(style.height).toBe(48);
     expect(style.right).toBe("auto");
     expect(style.bottom).toBe("auto");
-  });
-
-  test("builds a steady glyph plan from the committed measurement for idle rendering", () => {
-    const steadyPlan = createSteadyGlyphPlan({
-      ...measurement,
-      snapshot: {
-        ...measurement.snapshot,
-        graphemes: [
-          { glyph: "B", key: "B:0", left: 0, top: 0, width: 8, height: 24 },
-          { glyph: "A", key: "A:1", left: 8, top: 0, width: 8, height: 24 },
-        ],
-      },
-    });
-
-    expect(steadyPlan.frameWidth).toBe(24);
-    expect(steadyPlan.frameHeight).toBe(48);
-    expect(steadyPlan.sourceRenderText).toBe("BAA");
-    expect(steadyPlan.targetRenderText).toBe("BAA");
-    expect(steadyPlan.exitItems).toHaveLength(0);
-    expect(steadyPlan.liveItems).toHaveLength(2);
-    expect(steadyPlan.liveItems[0]).toMatchObject({
-      glyph: "B",
-      key: "B:0",
-      fromLeft: 0,
-      fromTop: 0,
-      kind: "move",
-    });
   });
 
   test("locks single-line glyph slices to nowrap", () => {
